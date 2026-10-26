@@ -15,14 +15,156 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 _FALLBACK_SEND_TOOLS = {
-    "mail_send",
-    "mail_compose",
-    "whatsapp_send",
-    "instagram_send",
-    "sms_send",
-    "calendar_create",
     "dial",
 }
+
+# Google-backed tools wired on /run. Reads work in any mode via
+# ``connectors.google`` when importable; send tools still become drafts
+# in sandbox (see _run_step).
+_GOOGLE_TOOLS = {
+    "mail_search",
+    "mail_summarize",
+    "mail_compose",
+    "mail_send",
+    "calendar_list",
+    "calendar_create",
+    "drive_search",
+}
+
+_GOOGLE_SEND_TOOLS = {
+    "mail_compose",
+    "mail_send",
+    "calendar_create",
+}
+
+
+def _load_google_connector():
+    """Return ``connectors.google`` module when importable, else None."""
+    try:
+        import connectors.google as _gm  # type: ignore
+        return _gm
+    except Exception:
+        pass
+    try:
+        import importlib as _il
+        try:
+            return _il.import_module("connectors.google")
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _coerce_google_result(sid, tool, raw):
+    if isinstance(raw, dict):
+        try:
+            ok = bool(raw.get("ok", True))
+        except Exception:
+            ok = True
+        out = (
+            raw.get("output")
+            if raw.get("output") not in (None, "")
+            else raw.get("text")
+            if raw.get("text") not in (None, "")
+            else raw.get("result")
+            if raw.get("result") not in (None, "")
+            else raw.get("body")
+            if raw.get("body") not in (None, "")
+            else raw.get("message")
+            if raw.get("message") not in (None, "")
+            else None
+        )
+        if out is None:
+            try:
+                out = json.dumps(raw)[:2000]
+            except Exception:
+                out = "%s done via google." % tool
+        status = raw.get("status") or ("done" if ok else "error")
+        res = {"id": sid, "ok": bool(ok), "output": str(out),
+               "status": str(status), "tool": tool}
+        try:
+            if raw.get("draft"):
+                res["draft"] = True
+        except Exception:
+            pass
+        return res
+    if isinstance(raw, (list, tuple)):
+        try:
+            out = json.dumps(list(raw))[:2000]
+        except Exception:
+            out = str(raw)[:2000]
+        if not out:
+            out = "%s done via google." % tool
+        return {"id": sid, "ok": True, "output": out,
+                "status": "done", "tool": tool}
+    if raw is None:
+        return {"id": sid, "ok": True,
+                "output": "%s done via google." % tool,
+                "status": "done", "tool": tool}
+    return {"id": sid, "ok": True, "output": str(raw),
+            "status": "done", "tool": tool}
+
+
+def _call_google_tool(sid, tool, args):
+    """Try ``connectors.google`` for *tool*.
+
+    Returns (handled, result_dict). handled=False means no google module
+    or no callable entrypoint — caller should use sandbox fallback.
+    handled=True means google was invoked (success or error).
+    """
+    mod = _load_google_connector()
+    if mod is None:
+        return False, None
+    fn = getattr(mod, tool, None)
+    generic = None
+    if not callable(fn):
+        for alt in ("run", "call", "execute", "handle", "run_tool"):
+            cand = getattr(mod, alt, None)
+            if callable(cand):
+                generic = cand
+                break
+        if generic is None:
+            return False, None
+    try:
+        if callable(fn):
+            # Prefer the most common connector signatures.
+            try:
+                raw = fn(dict(args or {}))
+                return True, _coerce_google_result(sid, tool, raw)
+            except TypeError:
+                pass
+            try:
+                raw = fn(**(dict(args or {})))
+                return True, _coerce_google_result(sid, tool, raw)
+            except TypeError:
+                pass
+            try:
+                raw = fn()
+                return True, _coerce_google_result(sid, tool, raw)
+            except TypeError:
+                pass
+            # Last resort: single-arg call already tried; re-raise.
+            raw = fn(dict(args or {}))
+            return True, _coerce_google_result(sid, tool, raw)
+        # Generic entrypoint: (tool, args) style.
+        for attempt in (
+            lambda: generic(tool, dict(args or {})),
+            lambda: generic(tool, **(dict(args or {}))),
+            lambda: generic({"tool": tool, "args": dict(args or {})}),
+            lambda: generic({"id": sid, "tool": tool,
+                             "args": dict(args or {})}),
+        ):
+            try:
+                raw = attempt()
+                return True, _coerce_google_result(sid, tool, raw)
+            except TypeError:
+                continue
+        raw = generic(tool, dict(args or {}))
+        return True, _coerce_google_result(sid, tool, raw)
+    except Exception as exc:
+        return True, {"id": sid, "ok": False,
+                      "output": "error: %s" % exc,
+                      "status": "error", "tool": tool}
 
 
 def _int_env(names, default):
@@ -289,9 +431,23 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools):
     tool = (step.get("tool") or "type_into")
     args = dict(step.get("args") or {})
     confirm = bool(step.get("confirm", False))
-    is_send = tool in send_tools
+    is_send = tool in send_tools or tool in _GOOGLE_SEND_TOOLS
     sandbox = (mode or "sandbox") == "sandbox"
     needs_draft = bool(is_send or args.get("draft") is True or (sandbox and (confirm or tool in confirm_tools)))
+    if tool in _GOOGLE_TOOLS and not needs_draft:
+        mapped = {
+            "mail_search": "search_mail",
+            "mail_summarize": "summarize_thread",
+            "mail_compose": "compose",
+            "mail_send": "compose",
+            "calendar_list": "calendar_list",
+            "calendar_create": "calendar_create",
+            "drive_search": "drive_search",
+        }.get(tool, tool)
+        handled, gres = _call_google_tool(sid, mapped, args)
+        if handled and gres:
+            gres["tool"] = tool
+            return gres
     # Never actually send mail/WA-family tools even in live mode.
     if tool in _FALLBACK_SEND_TOOLS:
         needs_draft = True
