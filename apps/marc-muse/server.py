@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import sys
+import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +22,16 @@ try:
     import executor
 except Exception:
     executor = None
+
+try:
+    import sessions
+except Exception:
+    sessions = None  # type: ignore
+
+try:
+    import meta_cloud
+except Exception:
+    meta_cloud = None  # type: ignore
 
 
 def _load_recall():
@@ -115,6 +126,175 @@ def _hop_defaults():
     return 8, 14
 
 
+# ------------------------------------------------------- webhook helpers ---
+
+def _webhook_verify_tokens():
+    """Tokens accepted for hub.verify_token (MARC_TOKEN / MARC_WEBHOOK_VERIFY)."""
+    toks = []
+    for key in ("MARC_TOKEN", "MARC_WEBHOOK_VERIFY"):
+        try:
+            v = (os.environ.get(key) or "").strip()
+        except Exception:
+            v = ""
+        if v and v not in toks:
+            toks.append(v)
+    # Convenience aliases (never required, but accepted when set).
+    for key in ("META_VERIFY_TOKEN", "MARC_VERIFY_TOKEN", "VERIFY_TOKEN"):
+        try:
+            v = (os.environ.get(key) or "").strip()
+        except Exception:
+            v = ""
+        if v and v not in toks:
+            toks.append(v)
+    return toks
+
+
+def _webhook_secret():
+    """App secret used to verify webhook signatures (X-Hub-Signature-256)."""
+    for key in (
+        "MARC_WEBHOOK_SECRET",
+        "META_APP_SECRET",
+        "META_WEBHOOK_SECRET",
+        "WHATSAPP_APP_SECRET",
+        "MARC_APP_SECRET",
+        "WEBHOOK_SECRET",
+        "APP_SECRET",
+    ):
+        try:
+            v = (os.environ.get(key) or "").strip()
+        except Exception:
+            v = ""
+        if v:
+            return v
+    return ""
+
+
+def _verify_meta_signature(raw: bytes, sig_header: str) -> bool:
+    """Verify Meta X-Hub-Signature-256 header against the webhook secret.
+
+    Returns True when no secret is configured (open mode) so local/dev and
+    tests without a secret still pass. When a secret is configured the
+    header must be ``sha256=<hex hmac>``.
+    """
+    secret = _webhook_secret()
+    if not secret:
+        return True
+    if not sig_header:
+        return False
+    sig = (sig_header or "").strip()
+    digest = ""
+    algo = "sha256"
+    if sig.startswith("sha256="):
+        digest = sig[len("sha256="):].strip()
+        algo = "sha256"
+    elif sig.startswith("sha1="):
+        digest = sig[len("sha1="):].strip()
+        algo = "sha1"
+    else:
+        digest = sig
+        algo = "sha256"
+    if not digest:
+        return False
+    try:
+        if algo == "sha1":
+            expected = hmac.new(secret.encode("utf-8"), raw or b"", hashlib.sha1).hexdigest()
+        else:
+            expected = hmac.new(secret.encode("utf-8"), raw or b"", hashlib.sha256).hexdigest()
+    except Exception:
+        return False
+    try:
+        return hmac.compare_digest(digest.lower(), expected.lower())
+    except Exception:
+        return digest == expected
+
+
+# Back-compat aliases for the signature helper.
+_verify_signature = _verify_meta_signature
+verify_signature = _verify_meta_signature
+verify_webhook_signature = _verify_meta_signature
+
+
+def _fallback_webhook_messages(payload):
+    """Best-effort WhatsApp/Cloud webhook message extractor.
+
+    Handles the standard Cloud API shape:
+    entry[].changes[].value.messages[] with text.body + from.
+    """
+    msgs = []
+    try:
+        data = payload if isinstance(payload, dict) else {}
+        entries = data.get("entry")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                changes = entry.get("changes")
+                if not isinstance(changes, list):
+                    continue
+                for change in changes:
+                    if not isinstance(change, dict):
+                        continue
+                    value = change.get("value")
+                    if not isinstance(value, dict):
+                        continue
+                    for m in (value.get("messages") or []):
+                        if not isinstance(m, dict):
+                            continue
+                        text = ""
+                        t = m.get("text")
+                        if isinstance(t, dict):
+                            text = str(t.get("body") or t.get("text") or "")
+                        elif isinstance(t, str):
+                            text = t
+                        if not text:
+                            text = str(m.get("body") or m.get("message") or "")
+                        sender = str(m.get("from") or m.get("sender") or m.get("wa_id") or "")
+                        mid = str(m.get("id") or "")
+                        msgs.append({"from": sender, "text": text, "id": mid,
+                                     "source": "meta", "raw": m})
+        if not msgs and isinstance(data.get("messages"), list):
+            for m in data["messages"]:
+                if isinstance(m, dict):
+                    t = m.get("text")
+                    if isinstance(t, dict):
+                        t = t.get("body") or ""
+                    msgs.append({"from": str(m.get("from") or ""),
+                                 "text": str(t or m.get("body") or ""),
+                                 "source": "meta", "raw": m})
+                else:
+                    msgs.append({"text": str(m), "source": "meta"})
+        if not msgs:
+            # Single-message shortcut: {"text": "...", "from": "..."}.
+            if isinstance(data.get("text"), str) and data.get("text"):
+                msgs.append({"from": str(data.get("from") or ""),
+                             "text": data.get("text"), "source": "meta"})
+            elif isinstance(data.get("text"), dict) and data["text"].get("body"):
+                msgs.append({"from": str(data.get("from") or ""),
+                             "text": str(data["text"].get("body") or ""),
+                             "source": "meta"})
+    except Exception:
+        pass
+    return msgs
+
+
+def _call_parse_webhook(payload):
+    """Call meta_cloud.parse_webhook(payload) with graceful fallback."""
+    mc = globals().get("meta_cloud")
+    if mc is None:
+        try:
+            mc = importlib.import_module("meta_cloud")
+        except Exception:
+            mc = None
+    if mc is not None:
+        try:
+            fn = getattr(mc, "parse_webhook", None)
+            if callable(fn):
+                return fn(payload)
+        except Exception:
+            pass
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "marc-muse/1.0"
 
@@ -126,6 +306,14 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_text(self, code, text):
+        body = (text or "").encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -144,15 +332,126 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _read_raw(self, limit=1_000_000):
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        if length < 0 or length > limit:
+            return None
+        if length == 0:
+            return b""
+        try:
+            return self.rfile.read(length)
+        except Exception:
+            return None
+
     def _need_auth(self):
         if not _authorized(self):
             self._send(401, {"ok": False, "error": "unauthorized"})
             return False
         return True
 
+    def _handle_meta_verify(self, parsed):
+        # Meta verify: GET /webhooks/meta?hub.mode=subscribe
+        #   &hub.verify_token=<token>&hub.challenge=<challenge>
+        # Auth: hub.verify_token must equal MARC_TOKEN or MARC_WEBHOOK_VERIFY.
+        try:
+            qs = parse_qs(parsed.query or "")
+        except Exception:
+            qs = {}
+        mode = (qs.get("hub.mode") or [""])[0]
+        token = (qs.get("hub.verify_token") or [""])[0]
+        challenge = (qs.get("hub.challenge") or [""])[0]
+        if mode and mode != "subscribe":
+            self._send(403, {"ok": False, "error": "forbidden"})
+            return
+        expected = _webhook_verify_tokens()
+        if expected:
+            ok = False
+            for exp in expected:
+                try:
+                    if hmac.compare_digest(token or "", exp):
+                        ok = True
+                        break
+                except Exception:
+                    if (token or "") == exp:
+                        ok = True
+                        break
+            if not ok:
+                self._send(403, {"ok": False, "error": "forbidden"})
+                return
+        if not challenge:
+            self._send(400, {"ok": False, "error": "missing hub.challenge"})
+            return
+        # Echo hub.challenge as plain text per Meta docs.
+        self._send_text(200, challenge)
+
+    def _handle_meta_webhook(self):
+        # POST /webhooks/meta — verify signature, parse, append to daily log.
+        raw = self._read_raw()
+        if raw is None:
+            self._send(400, {"ok": False, "error": "bad body"})
+            return
+        sig = (self.headers.get("X-Hub-Signature-256")
+               or self.headers.get("X-Hub-Signature")
+               or "")
+        if not _verify_meta_signature(raw, sig):
+            self._send(403, {"ok": False, "error": "bad signature"})
+            return
+        try:
+            text = (raw or b"").decode("utf-8", "replace")
+            payload = json.loads(text) if text.strip() else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        messages = _call_parse_webhook(payload)
+        if messages is None:
+            messages = _fallback_webhook_messages(payload)
+        if isinstance(messages, dict):
+            if isinstance(messages.get("messages"), list):
+                messages = messages.get("messages")
+            else:
+                messages = [messages]
+        if not isinstance(messages, list):
+            try:
+                messages = list(messages)  # type: ignore
+            except Exception:
+                messages = []
+        count = 0
+        for m in messages:
+            try:
+                if isinstance(m, dict):
+                    t = m.get("text")
+                    if isinstance(t, dict):
+                        t = t.get("body") or t.get("text") or ""
+                    text_v = str(t if t is not None else (m.get("body") or ""))
+                    if not text_v:
+                        # Fall back to raw json for empty texts so nothing is lost.
+                        try:
+                            text_v = json.dumps(m, ensure_ascii=False)[:500]
+                        except Exception:
+                            text_v = str(m)[:500]
+                    sender = str(m.get("from") or m.get("sender") or "")
+                    line = ("%s: %s" % (sender, text_v)).strip() if sender else text_v.strip()
+                    src = str(m.get("source") or "meta")
+                else:
+                    line = str(m)
+                    src = "meta"
+                if sessions is not None and hasattr(sessions, "append_daily"):
+                    sessions.append_daily(line, source=src)
+                count += 1
+            except Exception:
+                continue
+        self._send(200, {"ok": True, "count": count})
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = (parsed.path or "/").rstrip("/") or "/"
+        if path == "/webhooks/meta":
+            self._handle_meta_verify(parsed)
+            return
         if path == "/health":
             if not self._need_auth():
                 return
@@ -191,6 +490,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/") or "/"
+        if path == "/webhooks/meta":
+            self._handle_meta_webhook()
+            return
         if not self._need_auth():
             return
         if path == "/plan":
