@@ -43,6 +43,11 @@ try:
 except Exception:
     forms = None  # type: ignore
 
+try:
+    import drafts
+except Exception:
+    drafts = None  # type: ignore
+
 
 def _load_recall():
     try:
@@ -224,6 +229,31 @@ verify_signature = _verify_meta_signature
 verify_webhook_signature = _verify_meta_signature
 
 
+def _desk_index_path():
+    """Locate desk/index.html if present, else None."""
+    candidates = []
+    try:
+        here = Path(__file__).resolve().parent
+        candidates.append(here / "desk" / "index.html")
+    except Exception:
+        pass
+    try:
+        candidates.append(Path.cwd() / "desk" / "index.html")
+    except Exception:
+        pass
+    try:
+        candidates.append(Path.cwd() / "apps" / "marc-muse" / "desk" / "index.html")
+    except Exception:
+        pass
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
 def _fallback_webhook_messages(payload):
     """Best-effort WhatsApp/Cloud webhook message extractor.
 
@@ -327,6 +357,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_html(self, code, html_text):
+        body = (html_text or "").encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_desk(self):
+        desk = _desk_index_path()
+        if desk is None:
+            self._send(404, {"ok": False, "error": "not found"})
+            return
+        try:
+            html = desk.read_text(encoding="utf-8")
+        except Exception:
+            self._send(404, {"ok": False, "error": "not found"})
+            return
+        self._send_html(200, html)
 
     def _read_json(self):
         try:
@@ -496,6 +546,35 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, _do_whoami())
             return
+        if path == "/drafts":
+            if not self._need_auth():
+                return
+            if drafts is None or not hasattr(drafts, "list_drafts"):
+                self._send(503, {"ok": False, "error": "drafts missing"})
+                return
+            try:
+                qs = parse_qs(parsed.query or "")
+            except Exception:
+                qs = {}
+            status = (qs.get("status") or [""])[0] if qs else ""
+            if not status:
+                status = (qs.get("filter") or [""])[0] if qs else ""
+            try:
+                if status:
+                    items = drafts.list_drafts(status=status)
+                else:
+                    items = drafts.list_drafts()
+            except TypeError:
+                try:
+                    items = drafts.list_drafts()
+                except Exception as exc:
+                    self._send(500, {"ok": False, "error": str(exc)})
+                    return
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": str(exc)})
+                return
+            self._send(200, {"ok": True, "drafts": items})
+            return
         if path == "/forms/demo":
             if not self._need_auth():
                 return
@@ -517,6 +596,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path in ("/", "/desk", "/desk/index.html", "/index.html"):
+            self._serve_desk()
             return
         self._send(404, {"ok": False, "error": "not found"})
 

@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roxx / Marc desk (sandbox)</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171b22; --line:#2a303b; --txt:#e8ecf1; --dim:#9aa4b2; --acc:#5ac8fa; --danger:#ff5a5a; --ok:#4ade80; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  header .sub { color:var(--dim); font-size:12px; }
+  main { max-width:900px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  section h2 { margin:0 0 10px; font-size:14px; letter-spacing:.02em; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input[type=text], input[type=password], textarea { background:#0c0e12; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%; }
+  textarea { min-height:64px; resize:vertical; }
+  input.small { max-width:280px; }
+  button { background:#222936; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:8px 12px; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:#1d3a4d; border-color:#2f5b76; }
+  button.danger { background:#3d1d1d; border-color:#6b2b2b; color:#ffc9c9; }
+  pre { background:#0c0e12; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; max-height:320px; white-space:pre-wrap; word-break:break-word; }
+  .dim { color:var(--dim); font-size:12px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:20px; border:1px solid var(--line); font-size:12px; }
+  .ok { color:var(--ok); } .bad { color:var(--danger); }
+  ul.clean { list-style:none; margin:8px 0 0; padding:0; display:grid; gap:8px; }
+  ul.clean li { border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:#0c0e12; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Roxx / Marc desk <span class="sub">(sandbox)</span></h1>
+  <input id="origin" class="small" type="text" placeholder="http://127.0.0.1:8096" title="origin">
+  <input id="token" class="small" type="password" placeholder="marcToken (stored locally)" title="token">
+  <button id="saveConn">Save</button>
+  <span id="tokMask" class="dim" title="token masked"></span>
+  <span id="healthDot" class="pill">…</span>
+</header>
+<main>
+  <section id="s-chat">
+    <h2>Chat</h2>
+    <div class="row">
+      <textarea id="chatText" placeholder="Type a command, e.g. open youtube and search for lofi"></textarea>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="chatSend" class="primary">Send → POST /plan</button>
+      <span id="chatStatus" class="dim"></span>
+    </div>
+    <pre id="chatOut">Reply + plan will appear here.</pre>
+  </section>
+
+  <section id="s-drafts">
+    <h2>Drafts</h2>
+    <div class="row">
+      <button id="draftsLoad">Refresh → GET /drafts</button>
+      <span id="draftsStatus" class="dim"></span>
+    </div>
+    <ul id="draftsList" class="clean"><li class="dim">No drafts loaded yet.</li></ul>
+  </section>
+
+  <section id="s-kill">
+    <h2>Kill switch</h2>
+    <div class="row">
+      <button id="killBtn" class="danger">STOP → POST /muse/stop</button>
+      <button id="resumeBtn">Resume → POST /muse/resume</button>
+      <span id="killStatus" class="dim"></span>
+    </div>
+  </section>
+
+  <section id="s-budget">
+    <h2>Budget</h2>
+    <div class="row">
+      <button id="healthBtn">Refresh → GET /health</button>
+      <span id="budgetStatus" class="dim"></span>
+    </div>
+    <pre id="healthOut">paused / max_hops will appear here.</pre>
+  </section>
+
+  <section id="s-mind">
+    <h2>Mind people</h2>
+    <div class="row">
+      <input id="mindQ" type="text" value="people" class="small" placeholder="people">
+      <button id="mindBtn">Recall → GET /mind?q=…</button>
+      <button id="whoBtn">WhoAmI → GET /whoami</button>
+    </div>
+    <pre id="mindOut" style="margin-top:8px">Mind recall will appear here.</pre>
+  </section>
+</main>
+<script>
+(function(){
+  "use strict";
+  var DEFAULT_ORIGIN = "http://127.0.0.1:8096";
+  var originEl = document.getElementById("origin");
+  var tokenEl = document.getElementById("token");
+  var tokMask = document.getElementById("tokMask");
+
+  function loadConn(){
+    var o = "";
+    var t = "";
+    try {
+      o = localStorage.getItem("marcOrigin") || "";
+      t = localStorage.getItem("marcToken") || "";
+    } catch(e) {}
+    if(!o){
+      if(location && location.origin && location.origin.indexOf("http") === 0) o = location.origin;
+      else o = DEFAULT_ORIGIN;
+    }
+    originEl.value = o || DEFAULT_ORIGIN;
+    // Never fill the full token back into the DOM value display; keep input empty
+    // unless user types. Track presence via mask only.
+    tokenEl.value = "";
+    tokenEl.dataset.has = t ? "1" : "";
+    maskToken(t);
+  }
+
+  function maskToken(t){
+    t = (t || "");
+    if(!t){ tokMask.textContent = "no token saved"; return; }
+    var tail = t.length <= 4 ? "****" : "****" + t.slice(-4);
+    tokMask.textContent = "token " + tail + " (" + t.length + " chars, masked)";
+  }
+
+  function getToken(){
+    // Prefer freshly typed value; otherwise stored value. Never display full value.
+    var typed = (tokenEl.value || "");
+    if(typed) return typed;
+    try { return localStorage.getItem("marcToken") || ""; } catch(e){ return ""; }
+  }
+
+  function base(){
+    var v = (originEl.value || "").trim() || DEFAULT_ORIGIN;
+    return v.replace(/\/+$/, "");
+  }
+
+  function headers(json){
+    var h = {};
+    if(json) h["Content-Type"] = "application/json";
+    var t = getToken();
+    if(t){ h["Authorization"] = "Bearer " + t; h["X-Marc-Token"] = t; }
+    return h;
+  }
+
+  function show(el, obj){
+    try { el.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); }
+    catch(e){ el.textContent = String(obj); }
+  }
+
+  document.getElementById("saveConn").addEventListener("click", function(){
+    var o = (originEl.value || "").trim() || DEFAULT_ORIGIN;
+    var t = (tokenEl.value || "");
+    try {
+      localStorage.setItem("marcOrigin", o);
+      if(t) localStorage.setItem("marcToken", t);
+    } catch(e) {}
+    originEl.value = o;
+    var stored = t;
+    if(!stored){ try { stored = localStorage.getItem("marcToken") || ""; } catch(e){} }
+    tokenEl.value = "";
+    tokenEl.dataset.has = stored ? "1" : "";
+    maskToken(stored);
+    toast("healthDot", "saved");
+    refreshHealth(true);
+  });
+
+  function toast(id, msg){
+    var el = document.getElementById(id);
+    if(el) el.textContent = msg;
+  }
+
+  // ---- Chat: POST /plan ----
+  document.getElementById("chatSend").addEventListener("click", function(){
+    var text = document.getElementById("chatText").value || "";
+    var out = document.getElementById("chatOut");
+    var st = document.getElementById("chatStatus");
+    st.textContent = "sending…";
+    fetch(base() + "/plan", {
+      method: "POST", headers: headers(true),
+      body: JSON.stringify({ text: text, session_id: "desk", target: "auto" })
+    }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); })
+    .then(function(res){
+      st.textContent = "HTTP " + res.status;
+      var reply = res.body && res.body.reply ? res.body.reply : "";
+      var plan = res.body && res.body.plan ? res.body.plan : res.body;
+      show(out, { reply: reply, plan: res.body && res.body.plan !== undefined ? res.body.plan : res.body, raw: res.body });
+    }).catch(function(e){ st.textContent = "error"; show(out, "chat error: " + e); });
+  });
+
+  // ---- Drafts: GET /drafts (placeholder if missing) ----
+  function renderDrafts(list){
+    var ul = document.getElementById("draftsList");
+    ul.innerHTML = "";
+    if(!list || !list.length){
+      var li = document.createElement("li");
+      li.className = "dim";
+      li.textContent = "No drafts queued.";
+      ul.appendChild(li);
+      return;
+    }
+    list.forEach(function(d){
+      var li = document.createElement("li");
+      var title = (d.channel || d.tool || "draft") + " → " + (d.person || d.to || "");
+      var body = d.body || d.text || "";
+      var meta = "id=" + (d.id || "?") + " status=" + (d.status || "?");
+      li.innerHTML = "";
+      var b = document.createElement("b"); b.textContent = title || "draft";
+      var m = document.createElement("div"); m.className = "dim"; m.textContent = meta;
+      var p = document.createElement("div"); p.textContent = body;
+      li.appendChild(b); li.appendChild(m); li.appendChild(p);
+      ul.appendChild(li);
+    });
+  }
+  document.getElementById("draftsLoad").addEventListener("click", function(){
+    var st = document.getElementById("draftsStatus");
+    st.textContent = "loading…";
+    fetch(base() + "/drafts", { headers: headers(false) })
+    .then(function(r){
+      if(r.status === 404){
+        st.textContent = "endpoint missing (404)";
+        var ul = document.getElementById("draftsList");
+        ul.innerHTML = "";
+        var li = document.createElement("li");
+        li.className = "dim";
+        li.textContent = "Drafts endpoint not available — nothing queued.";
+        ul.appendChild(li);
+        return null;
+      }
+      return r.json().then(function(j){ return {status:r.status, body:j}; });
+    }).then(function(res){
+      if(!res) return;
+      st.textContent = "HTTP " + res.status;
+      var b = res.body;
+      var list = Array.isArray(b) ? b : (b && Array.isArray(b.drafts) ? b.drafts : (b && Array.isArray(b.items) ? b.items : null));
+      if(list === null){
+        var ul = document.getElementById("draftsList");
+        ul.innerHTML = "";
+        var li = document.createElement("li");
+        li.className = "dim";
+        li.textContent = "Drafts endpoint not available — nothing queued.";
+        ul.appendChild(li);
+        return;
+      }
+      renderDrafts(list);
+    }).catch(function(e){
+      st.textContent = "unreachable";
+      var ul = document.getElementById("draftsList");
+      ul.innerHTML = "";
+      var li = document.createElement("li");
+      li.className = "dim";
+      li.textContent = "Drafts endpoint not available — nothing queued. (" + e + ")";
+      ul.appendChild(li);
+    });
+  });
+
+  // ---- Kill switch ----
+  document.getElementById("killBtn").addEventListener("click", function(){
+    var st = document.getElementById("killStatus");
+    st.textContent = "stopping…";
+    fetch(base() + "/muse/stop", { method: "POST", headers: headers(true), body: "{}" })
+    .then(function(r){ return r.json(); })
+    .then(function(j){ st.textContent = j && j.stopped ? "STOPPED" : JSON.stringify(j); refreshHealth(true); })
+    .catch(function(e){ st.textContent = "error: " + e; });
+  });
+  document.getElementById("resumeBtn").addEventListener("click", function(){
+    var st = document.getElementById("killStatus");
+    st.textContent = "resuming…";
+    fetch(base() + "/muse/resume", { method: "POST", headers: headers(true), body: "{}" })
+    .then(function(r){ return r.json(); })
+    .then(function(j){ st.textContent = "resumed: " + JSON.stringify(j); refreshHealth(true); })
+    .catch(function(e){ st.textContent = "error: " + e; });
+  });
+
+  // ---- Budget: GET /health ----
+  function refreshHealth(quiet){
+    var out = document.getElementById("healthOut");
+    var st = document.getElementById("budgetStatus");
+    var dot = document.getElementById("healthDot");
+    if(!quiet) st.textContent = "loading…";
+    fetch(base() + "/health", { headers: headers(false) })
+    .then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); })
+    .then(function(res){
+      st.textContent = "HTTP " + res.status;
+      var b = res.body || {};
+      var paused = b.paused; var mx = b.max_hops !== undefined ? b.max_hops : (b.hops && b.hops.max_hops);
+      dot.textContent = (paused ? "paused" : "running") + " / hops " + (mx !== undefined ? mx : "?");
+      dot.className = "pill " + (paused ? "bad" : "ok");
+      show(out, { paused: paused, max_hops: mx, stopped: b.stopped, mode: b.mode, raw: b });
+    }).catch(function(e){ st.textContent = "unreachable"; dot.textContent = "offline"; show(out, "health error: " + e); });
+  }
+  document.getElementById("healthBtn").addEventListener("click", function(){ refreshHealth(false); });
+
+  // ---- Mind people ----
+  document.getElementById("mindBtn").addEventListener("click", function(){
+    var q = document.getElementById("mindQ").value || "people";
+    var out = document.getElementById("mindOut");
+    out.textContent = "loading…";
+    fetch(base() + "/mind?q=" + encodeURIComponent(q), { headers: headers(false) })
+    .then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); })
+    .then(function(res){ show(out, res.body); })
+    .catch(function(e){ show(out, "mind error: " + e); });
+  });
+  document.getElementById("whoBtn").addEventListener("click", function(){
+    var out = document.getElementById("mindOut");
+    out.textContent = "loading…";
+    fetch(base() + "/whoami", { headers: headers(false) })
+    .then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); })
+    .then(function(res){ show(out, res.body); })
+    .catch(function(e){ show(out, "whoami error: " + e); });
+  });
+
+  loadConn();
+  refreshHealth(true);
+})();
+</script>
+</body>
+</html>
