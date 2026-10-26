@@ -1,0 +1,17 @@
+# marc-muse — loopback only (127.0.0.1:8096). Do not expose off loopback.
+[Unit]
+Description=marc-muse planner (loopback only)
+After=network.target
+
+[Service]
+User=rox
+WorkingDirectory=/home/rox/marc-muse
+ExecStart=/usr/bin/python3 /home/rox/marc-muse/apps/marc-muse/server.py
+EnvironmentFile=-/home/rox/marc-muse.env
+Environment=MARC_MUSE_BIND=127.0.0.1 MARC_MUSE_PORT=8096
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
