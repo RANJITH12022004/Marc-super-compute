@@ -4,11 +4,14 @@ Entry:  python apps/marc-muse/server.py
 Bind:   MARC_MUSE_BIND : MARC_MUSE_PORT  (default 127.0.0.1:8096)
 """
 
+import importlib.util
 import json
 import os
 import sys
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -18,6 +21,61 @@ try:
     import executor
 except Exception:
     executor = None
+
+
+def _load_recall():
+    try:
+        from brain.recall import mind_recall, who_am_i  # type: ignore
+        return mind_recall, who_am_i
+    except Exception:
+        pass
+    try:
+        here = Path(os.path.dirname(os.path.abspath(__file__)))
+        rp = here / "brain" / "recall.py"
+        if rp.is_file():
+            spec = importlib.util.spec_from_file_location("brain_recall_fallback", str(rp))
+            if spec is not None and spec.loader is not None:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return getattr(mod, "mind_recall", None), getattr(mod, "who_am_i", None)
+    except Exception:
+        pass
+    return None, None
+
+
+_recall_fn, _whoami_fn = _load_recall()
+
+
+def _do_recall(query):
+    if callable(_recall_fn):
+        try:
+            res = _recall_fn(query or "")
+            if isinstance(res, dict):
+                res.setdefault("ok", True)
+                res.setdefault("text", "")
+                res.setdefault("hits", [])
+                return res
+            if isinstance(res, str):
+                return {"ok": True, "text": res, "hits": []}
+        except Exception as exc:
+            return {"ok": False, "text": "recall error: %s" % exc, "hits": []}
+    return {"ok": False, "text": "recall unavailable", "hits": []}
+
+
+def _do_whoami():
+    if callable(_whoami_fn):
+        try:
+            res = _whoami_fn()
+            if isinstance(res, dict):
+                res.setdefault("ok", True)
+                res.setdefault("text", "")
+                res.setdefault("hits", [])
+                return res
+            if isinstance(res, str):
+                return {"ok": True, "text": res, "hits": []}
+        except Exception as exc:
+            return {"ok": False, "text": "whoami error: %s" % exc, "hits": []}
+    return _do_recall("who am i")
 
 
 def _bind():
@@ -93,7 +151,8 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
-        path = self.path.split("?")[0].rstrip("/") or "/"
+        parsed = urlparse(self.path)
+        path = (parsed.path or "/").rstrip("/") or "/"
         if path == "/health":
             if not self._need_auth():
                 return
@@ -108,6 +167,25 @@ class Handler(BaseHTTPRequestHandler):
                 "hard_hops": hd,
                 "hops": {"max_hops": mx, "hard_hops": hd},
             })
+            return
+        if path == "/mind":
+            if not self._need_auth():
+                return
+            try:
+                qs = parse_qs(parsed.query or "")
+            except Exception:
+                qs = {}
+            q = qs.get("q", [""])[0]
+            if not q:
+                q = qs.get("query", [""])[0]
+            if not q:
+                q = qs.get("text", [""])[0]
+            self._send(200, _do_recall(q or ""))
+            return
+        if path == "/whoami":
+            if not self._need_auth():
+                return
+            self._send(200, _do_whoami())
             return
         self._send(404, {"ok": False, "error": "not found"})
 
