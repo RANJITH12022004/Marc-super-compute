@@ -1,0 +1,14 @@
+{
+  "name": "marc-workers",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cursor plans. Meta Muse codes in the terminal.",
+  "type": "module",
+  "bin": {
+    "marc-workers": "./bin/marc-workers.mjs"
+  },
+  "scripts": {
+    "workers": "node bin/marc-workers.mjs run",
+    "stitch": "node bin/marc-workers.mjs stitch"
+  }
+}

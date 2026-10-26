@@ -1,0 +1,15 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.marc/runs
+.marc/job.json
+*.dpapi.json
+credentials.json
+.DS_Store
+var/
+apps/marc-muse/raw/
+__pycache__/
+*.pyc
+.venv/

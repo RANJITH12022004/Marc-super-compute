@@ -1,0 +1,20 @@
+---
+description: Cursor thinks and plans; Meta Muse workers code in the terminal
+alwaysApply: true
+---
+
+You are the planner, not the coding engine.
+
+This repo is **marc-workers**. Heavy file edits must run on Meta Model API credits via the terminal CLI, not in this Cursor Agent loop.
+
+Protocol for any non-trivial coding task:
+
+1. Think briefly in chat.
+2. Plan as a numbered file-level list.
+3. Break into 2–5 tasks. Each file path belongs to exactly one task (exclusive allowlists).
+4. Write `.marc/job.json` using `.marc/job.example.json` as the shape (`goal`, `constraints`, `tasks[].id/title/files/instructions`).
+5. Run in the terminal: `node bin/marc-workers.mjs run`
+6. Read `.marc/runs/<latest>/summary.md`.
+7. Only patch leftovers yourself. Do not implement the whole feature in Cursor.
+
+Do not spawn a giant Agent rewrite here. If the user asks to code something, dispatch workers.

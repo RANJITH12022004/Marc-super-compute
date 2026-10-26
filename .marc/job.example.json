@@ -1,0 +1,18 @@
+{
+  "goal": "Add POST /notes to the demo notes API and a one-line README note.",
+  "constraints": [".marc", "node_modules"],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Implement POST /notes",
+      "files": ["apps/demo-workspace/server.js"],
+      "instructions": "Add POST /notes that reads JSON { title, body }, assigns an incrementing id, pushes onto notes, returns the created note with 201."
+    },
+    {
+      "id": "t2",
+      "title": "Document the new endpoint",
+      "files": ["apps/demo-workspace/README.md"],
+      "instructions": "Document POST /notes with a curl example. Do not rewrite the whole README."
+    }
+  ]
+}
