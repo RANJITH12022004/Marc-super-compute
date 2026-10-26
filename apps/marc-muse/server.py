@@ -33,6 +33,16 @@ try:
 except Exception:
     meta_cloud = None  # type: ignore
 
+try:
+    import office
+except Exception:
+    office = None  # type: ignore
+
+try:
+    import forms
+except Exception:
+    forms = None  # type: ignore
+
 
 def _load_recall():
     try:
@@ -486,6 +496,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, _do_whoami())
             return
+        if path == "/forms/demo":
+            if not self._need_auth():
+                return
+            demo = None
+            if forms is not None and hasattr(forms, "demo_html_path"):
+                try:
+                    demo = Path(forms.demo_html_path())
+                except Exception:
+                    demo = None
+            if demo is None:
+                demo = Path(__file__).resolve().parent / "sandbox" / "forms" / "demo.html"
+            if not demo.is_file():
+                self._send(404, {"ok": False, "error": "demo form missing"})
+                return
+            html = demo.read_text(encoding="utf-8")
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -537,6 +569,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/muse/resume":
             planner.clear_stopped()
             self._send(200, {"ok": True, "stopped": False})
+            return
+        if path == "/office":
+            if office is None:
+                self._send(503, {"ok": False, "error": "office missing"})
+                return
+            data = self._read_json()
+            self._send(200, office.start_task(data.get("goal") or data.get("text") or ""))
+            return
+        if path in ("/office/stop", "/office/stop/"):
+            if office is None:
+                self._send(503, {"ok": False, "error": "office missing"})
+                return
+            data = self._read_json()
+            self._send(200, office.stop_task(data.get("id") or data.get("task_id") or ""))
+            return
+        if path == "/forms/fill":
+            if forms is None:
+                self._send(503, {"ok": False, "error": "forms missing"})
+                return
+            data = self._read_json()
+            html_path = data.get("html_path") or data.get("path")
+            values = data.get("values") or data
+            self._send(200, forms.fill(html_path, values if isinstance(values, dict) else {}))
             return
         self._send(404, {"ok": False, "error": "not found"})
 

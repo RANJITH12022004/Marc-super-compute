@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FAKE Sandbox — Demo Contact Form</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; padding: 0 1rem; }
+  .banner { background: #fff3cd; border: 2px dashed #b58900; color: #664d03;
+            padding: 0.75rem 1rem; border-radius: 8px; font-weight: 700; }
+  form { margin-top: 1rem; display: grid; gap: 0.75rem; }
+  label { font-weight: 600; }
+  input, textarea { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 6px; }
+  button { padding: 0.6rem 1rem; border: 0; border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="banner">FAKE sandbox — local demo only. No data leaves this machine.</div>
+<h1>Demo contact form</h1>
+<p>This is a <strong>FAKE</strong> sandbox playground form. Submitting stays local (no network).</p>
+<form id="demo-form" action="#" method="get" onsubmit="document.getElementById('done').textContent='Saved locally (FAKE sandbox, no network).'; return false;">
+  <div>
+    <label for="name">Your name</label>
+    <input id="name" name="name" type="text" placeholder="Ada Lovelace" autocomplete="off" />
+  </div>
+  <div>
+    <label for="email">Email address</label>
+    <input id="email" name="email" type="email" placeholder="ada@example.com" autocomplete="off" />
+  </div>
+  <div>
+    <label for="message">Message</label>
+    <textarea id="message" name="message" rows="5" placeholder="Hello from the sandbox…"></textarea>
+  </div>
+  <button type="submit">Send (local only)</button>
+</form>
+<p id="done" role="status"></p>
+</body>
+</html>
