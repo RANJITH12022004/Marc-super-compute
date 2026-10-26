@@ -14,6 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import planner
 
+try:
+    import executor
+except Exception:
+    executor = None
+
 
 def _bind():
     host = (os.environ.get("MARC_MUSE_BIND") or "127.0.0.1").strip() or "127.0.0.1"
@@ -38,6 +43,18 @@ def _authorized(handler):
     if not got:
         return False
     return hmac.compare_digest(got, expected)
+
+
+def _hop_defaults():
+    if executor is not None:
+        try:
+            h = executor.get_hops()
+            mx = int(h.get("max_hops", 8))
+            hd = int(h.get("hard_hops", 14))
+            return mx, hd
+        except Exception:
+            pass
+    return 8, 14
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -80,12 +97,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             if not self._need_auth():
                 return
+            mx, hd = _hop_defaults()
             self._send(200, {
                 "ok": True,
                 "planner": "muse",
                 "mode": planner.get_mode(),
                 "paused": planner.is_paused(),
                 "stopped": planner.is_stopped(),
+                "max_hops": mx,
+                "hard_hops": hd,
+                "hops": {"max_hops": mx, "hard_hops": hd},
             })
             return
         self._send(404, {"ok": False, "error": "not found"})
@@ -103,6 +124,30 @@ class Handler(BaseHTTPRequestHandler):
                 note=data.get("note", ""),
                 context=data.get("context"),
             )
+            self._send(200, result)
+            return
+        if path == "/run":
+            data = self._read_json()
+            session_id = data.get("session_id") or data.get("session") or "phone"
+            plan_obj = data.get("plan")
+            if plan_obj is None:
+                plan_obj = planner.plan(
+                    text=data.get("text", "") or "",
+                    session_id=session_id,
+                    target=data.get("target", "auto"),
+                    note=data.get("note", ""),
+                    context=data.get("context"),
+                )
+            if executor is None:
+                self._send(200, {"ok": False, "error": "executor missing",
+                                 "session_id": session_id})
+                return
+            try:
+                result = executor.execute_plan(plan_obj, session_id)
+            except Exception as exc:
+                self._send(200, {"ok": False, "error": str(exc),
+                                 "session_id": session_id})
+                return
             self._send(200, result)
             return
         if path in ("/muse/stop", "/stop"):
