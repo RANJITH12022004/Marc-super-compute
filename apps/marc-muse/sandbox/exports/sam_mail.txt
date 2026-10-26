@@ -1,0 +1,53 @@
+# FAKE email export — Sam (formal lease thread) — SANDBOX ONLY, DO NOT CONTACT
+# All names, addresses, amounts, and IDs below are FAKE fixtures for style/leak tests.
+# No real PII. Do not email, forward, or act on this thread.
+# Person: Sam | Relationship: professional | Channel: gmail (mail)
+# Export format: From / To / Date / Subject / Body (plain text)
+
+---
+From: Sam (FAKE) <sam.professional.fake@example.com>
+To: Me <me.fake@example.com>
+Date: 2026-09-10 10:15 UTC
+Subject: FAKE Lease Renewal — 42 Maple Court, Unit 4B
+Body:
+Dear Sir/Madam,
+
+I hope you are well. I am writing regarding the lease renewal for the
+FAKE property at 42 Maple Court, Unit 4B, Springfield (FAKE address).
+
+Current FAKE terms for reference:
+- Monthly rent: $1450 (FAKE amount)
+- Lease term: 12 months starting 2026-11-01 (FAKE date)
+- Security deposit: $1450 (FAKE amount)
+- Landlord: Greenfield Properties (FAKE company)
+- Lease ID: LSE-2026-4481 (FAKE ID)
+
+Please confirm whether the renewal at $1450 per month is acceptable,
+and advise on the updated move-in inspection checklist.
+
+Kindly confirm receipt of this message at your earliest convenience.
+
+Best regards,
+Sam
+Property Coordinator (FAKE title)
+sam.professional.fake@example.com | +1-555-0199 (FAKE)
+---
+
+---
+From: Me <me.fake@example.com>
+To: Sam (FAKE) <sam.professional.fake@example.com>
+Date: 2026-09-11 09:02 UTC
+Subject: Re: FAKE Lease Renewal — 42 Maple Court, Unit 4B
+Body:
+Dear Sam,
+
+Thank you for sharing the renewal terms for 42 Maple Court, Unit 4B.
+I confirm receipt of Lease ID LSE-2026-4481 and the $1450 monthly rent
+proposal from Greenfield Properties (all FAKE).
+
+I will review the 12-month term and security deposit details and
+respond with a signed copy by next week.
+
+Best regards,
+Me
+---

@@ -1,0 +1,25 @@
+# FAKE WhatsApp export — Priya (friend) — SANDBOX ONLY, DO NOT CONTACT
+# All names, numbers, and messages below are FAKE fixtures for style tests.
+# No real PII. Do not message, call, or forward. For leak-test use only.
+# Person: Priya | Relationship: friend | Channels: whatsapp + instagram
+# Export format: [YYYY-MM-DD, HH:MM] Sender: message
+# Language style: casual Tanglish (Tamil + English), friend chat
+
+[2026-09-01, 18:02] Priya: Dei machi! saptiya? 😄
+[2026-09-01, 18:03] Me: illa da, just reached home. nee?
+[2026-09-01, 18:04] Priya: naan sapten! amma sambar semma super irundhuchu
+[2026-09-01, 18:05] Priya: btw weekend plan enna? movie paakalaam?
+[2026-09-01, 18:06] Me: ok da, saturday evening free. which movie?
+[2026-09-01, 18:07] Priya: cool, appo book panlam. late aanaalum paravailla 😂
+[2026-09-02, 09:12] Priya: machan assignment mudinjutha? enakku oru doubt
+[2026-09-02, 09:15] Me: mudinjuthu, evening call panren, explain panren
+[2026-09-02, 09:16] Priya: super thanks da! 🙏 evening pesalam
+[2026-09-03, 21:40] Priya: dei cricket paathiya? last over semma thrill!
+[2026-09-03, 21:42] Me: paathen! enna match da adhu
+[2026-09-03, 21:43] Priya: aama da, nethu full night highlight dhaan 😅
+[2026-09-04, 12:01] Priya: lunch saptiya? canteen la special mealsam
+[2026-09-04, 12:03] Me: illa, varen 10 mins la. seat podu!
+[2026-09-04, 12:04] Priya: ok ok vaa, seekiram vaa 😋
+[2026-09-05, 17:30] Priya: machi bday gift vaanga poren, evening free-ya?
+[2026-09-05, 17:32] Me: free dhaan, shop pogalaam. 6 mani?
+[2026-09-05, 17:33] Priya: done! 6 mani bus stop la meet panlam. bye da! 👋
