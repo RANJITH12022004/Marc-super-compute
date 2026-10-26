@@ -18,7 +18,8 @@ Loopback-only planner. Never expose `:8096` off loopback.
    cat >> /home/rox/marc-muse.env <<'EOF'
    MARC_PLANNER=muse
    MARC_MODE=sandbox
-   MARC_MUSE_URL=http://127.0.0.1:8096/plan
+   MARC_MUSE_BIND=127.0.0.1
+   MARC_MUSE_PORT=8096
    EOF
    ```
 
@@ -28,15 +29,21 @@ Loopback-only planner. Never expose `:8096` off loopback.
    sudo systemctl daemon-reload
    sudo systemctl enable --now marc-muse
    systemctl status marc-muse
-   curl -s http://127.0.0.1:8096/plan -X POST -d '{}' -H 'Content-Type: application/json' | head -c 200
+   curl -s http://127.0.0.1:8096/health
    ```
 
 ## Live `marc_api.py` patch
 
 Paste `plan_with_muse.py` into `marc_api.py`, set `MARC_PLANNER=muse`,
-and call `plan_with_muse()` instead of `plan_with_needle()`.
+and call `plan_with_muse()` instead of `plan_with_needle()`. That is the
+only live mark-laptop / Rox source edit.
+
+## Phone leftover
+
+See [../phone/LEFTOVER.md](../phone/LEFTOVER.md). Fast LocalMarc phrases stay
+on-device. Needle `:18096` stays off. Copy [../phone/needle-off.env](../phone/needle-off.env).
 
 ## Security
 
 - Binds `127.0.0.1:8096` only; do not add `ListenStream` / firewall rules for it.
-- Keep `MARC_MODE=sandbox`.
+- Keep `MARC_MODE=sandbox` until you explicitly flip live.
