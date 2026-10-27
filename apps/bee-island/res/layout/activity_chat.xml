@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bee_page"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- top bar: pips 44x14 + title bee 28sp -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <View
+            android:id="@+id/pips"
+            android:layout_width="44dp"
+            android:layout_height="14dp"
+            android:background="@color/bee_honey"
+            android:contentDescription="pips" />
+
+        <TextView
+            android:id="@+id/chat_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="bee"
+            android:textColor="@color/bee_ink"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- one bubble per wave -->
+    <ListView
+        android:id="@+id/chat_list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="16dp"
+        android:layout_weight="1"
+        android:background="@color/bee_page"
+        android:divider="@color/bee_separator"
+        android:dividerHeight="8dp" />
+
+    <!-- confirm_row visible chips labeled this/that -->
+    <LinearLayout
+        android:id="@+id/confirm_row"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@color/bee_surface"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:visibility="visible">
+
+        <Button
+            android:id="@+id/confirm_this"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:backgroundTint="@color/bee_ok"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="this"
+            android:textColor="@color/bee_page" />
+
+        <Button
+            android:id="@+id/confirm_that"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="@color/bee_surface"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="that"
+            android:textColor="@color/bee_ink" />
+
+        <!-- compat ids for existing code -->
+        <Button
+            android:id="@+id/confirm_yes"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="this"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/confirm_cancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="that"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/composer"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@color/bee_surface"
+            android:hint="Ask bee"
+            android:imeOptions="actionSend"
+            android:inputType="text"
+            android:minHeight="44dp"
+            android:padding="16dp"
+            android:textColor="@color/bee_ink"
+            android:textColorHint="@color/bee_honey" />
+
+        <Button
+            android:id="@+id/send_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:backgroundTint="@color/bee_honey"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="Send"
+            android:textColor="@color/bee_page" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottom_nav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:background="@color/bee_surface"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <Button
+            android:id="@+id/nav_island"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:backgroundTint="@color/bee_surface"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="Island"
+            android:textColor="@color/bee_ink" />
+
+        <Button
+            android:id="@+id/nav_chat"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:backgroundTint="@color/bee_surface"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="Chat"
+            android:textColor="@color/bee_honey" />
+
+        <Button
+            android:id="@+id/nav_setup"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:backgroundTint="@color/bee_surface"
+            android:minHeight="44dp"
+            android:minWidth="44dp"
+            android:text="Setup"
+            android:textColor="@color/bee_ink" />
+    </LinearLayout>
+</LinearLayout>

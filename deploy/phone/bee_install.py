@@ -63,13 +63,19 @@ def remote_join(*parts: str) -> str:
 def iter_local_files(base: Path = LOCAL):
     """Yield (local_path, rel_posix) for every file under LOCAL."""
     assert_safe_path(str(base))
+    skip_parts = {"__pycache__", ".gradle", "build"}
     for path in sorted(base.rglob("*")):
-        if path.is_file():
-            rel = path.relative_to(base).as_posix()
-            # Guard the relative legs too (walls apply everywhere).
-            assert_safe_path(rel)
-            assert_safe_path(f"{REMOTE}/{rel}")
-            yield path, rel
+        if not path.is_file():
+            continue
+        if any(part in skip_parts for part in path.parts):
+            continue
+        if path.suffix == ".pyc":
+            continue
+        rel = path.relative_to(base).as_posix()
+        # Guard the relative legs too (walls apply everywhere).
+        assert_safe_path(rel)
+        assert_safe_path(f"{REMOTE}/{rel}")
+        yield path, rel
 
 
 def ensure_remote_dir(ssh, remote_dir: str) -> None:
@@ -144,6 +150,109 @@ def deploy(host: str, port: int, username: str, secret: str, base: Path = LOCAL)
     return 0
 
 
+def _exec(ssh, cmd: str, timeout: int = 120) -> tuple[int, str, str]:
+    """Run a remote command. Never logs the SSH secret."""
+    assert_safe_path(REMOTE)
+    if "mark-laptop" in cmd.replace("\\", "/") or cmd.strip().startswith("rm -rf"):
+        raise ValueError("refusing unsafe remote command")
+    stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
+    out = stdout.read().decode("utf-8", errors="replace")
+    err = stderr.read().decode("utf-8", errors="replace")
+    code = stdout.channel.recv_exit_status()
+    return code, out, err
+
+
+def assemble_remote(ssh) -> str:
+    """Copy wrapper from the old tree (read-only) into REMOTE, then assembleDebug.
+
+    Never writes /home/rox/marc/android or any mark-laptop path.
+    Returns the remote APK path.
+    """
+    assert_safe_path(REMOTE)
+    gradle_home = "/home/rox/bee/gradle-8.9"
+    assert_safe_path(gradle_home)
+    script = (
+        "set -e; "
+        "mkdir -p '%s' '%s'; "
+        "printf 'sdk.dir=/home/rox/android-sdk\\n' > '%s/local.properties'; "
+        "if [ ! -x '%s/bin/gradle' ]; then "
+        "  cd /home/rox/bee; "
+        "  curl -fsSL -o gradle-8.9-bin.zip "
+        "    https://services.gradle.org/distributions/gradle-8.9-bin.zip; "
+        "  unzip -qo gradle-8.9-bin.zip; "
+        "fi; "
+        "cd '%s'; "
+        "'%s/bin/gradle' --no-daemon :app:assembleDebug"
+    ) % (
+        REMOTE, gradle_home,
+        REMOTE,
+        gradle_home,
+        REMOTE,
+        gradle_home,
+    )
+    print("assemble: :app:assembleDebug at /home/rox/bee/android")
+    code, out, err = _exec(ssh, script, timeout=600)
+    sys.stdout.write(out)
+    sys.stderr.write(err)
+    if code != 0:
+        raise RuntimeError("assembleDebug failed")
+    apk = remote_join("app/build/outputs/apk/debug/app-debug.apk")
+    assert_safe_path(apk)
+    return apk
+
+
+def pull_apk(sftp, remote_apk: str, local_apk: Path) -> Path:
+    assert_safe_path(remote_apk)
+    local_apk.parent.mkdir(parents=True, exist_ok=True)
+    sftp.get(remote_apk, str(local_apk))
+    print("apk -> %s" % local_apk.name)
+    return local_apk
+
+
+def adb_install(local_apk: Path) -> int:
+    """Install com.bee.island. Never targets com.marc.island."""
+    adb = os.environ.get(
+        "MARC_ADB",
+        r"C:\Users\ranjith\Downloads\platform-tools\adb.exe",
+    )
+    import subprocess
+    cmd = [adb, "install", str(local_apk)]
+    print("adb install (com.bee.island)")
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    sys.stdout.write(p.stdout or "")
+    sys.stderr.write(p.stderr or "")
+    if p.returncode != 0:
+        # Reinstall of the NEW package only.
+        cmd = [adb, "install", "-r", str(local_apk)]
+        print("adb install -r (com.bee.island only)")
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        sys.stdout.write(p.stdout or "")
+        sys.stderr.write(p.stderr or "")
+    return p.returncode
+
+
+def deploy_assemble_install(host: str, port: int, username: str, secret: str) -> int:
+    n = deploy(host, port, username, secret, LOCAL)
+    if n != 0:
+        return n
+    if paramiko is None:
+        raise RuntimeError("paramiko is required: pip install paramiko")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(hostname=host, port=port, username=username, password=secret)
+    try:
+        apk_remote = assemble_remote(client)
+        sftp = client.open_sftp()
+        try:
+            local_apk = ROOT / "var" / "bee-island-debug.apk"
+            pull_apk(sftp, apk_remote, local_apk)
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+    return adb_install(ROOT / "var" / "bee-island-debug.apk")
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     host = os.environ.get("MARC_SSH_HOST", "127.0.0.1")
@@ -153,9 +262,17 @@ def main(argv: list[str] | None = None) -> int:
     if not secret:
         print("SSH secret is not set in the environment; refusing to proceed", file=sys.stderr)
         return 2
-    base = LOCAL if not argv else (ROOT / argv[0] if not Path(argv[0]).is_absolute() else Path(argv[0]))
+    base = LOCAL
+    assemble = False
+    for arg in argv:
+        if arg in ("--assemble", "--install"):
+            assemble = True
+        else:
+            base = ROOT / arg if not Path(arg).is_absolute() else Path(arg)
     assert_safe_path(str(base))
     assert_safe_path(REMOTE)
+    if assemble:
+        return deploy_assemble_install(host, port, username, secret)
     return deploy(host, port, username, secret, base)
 
 

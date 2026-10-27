@@ -1,0 +1,2 @@
+beta start
+SMOKE_BETA=ok

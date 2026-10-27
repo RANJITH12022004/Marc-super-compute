@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bee_page"
+    android:padding="8dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:contentDescription="bee island mark"
+        android:gravity="center_vertical">
+
+        <ImageView
+            android:id="@+id/top_pips"
+            android:layout_width="44dp"
+            android:layout_height="14dp"
+            android:src="@drawable/island_pips"
+            android:contentDescription="bee island mark" />
+
+        <TextView
+            android:id="@+id/title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="bee"
+            android:textSize="28sp"
+            android:textColor="@color/bee_ink"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/island_page"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/bee_page">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <TextView
+                android:id="@+id/island_preview"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="bee listening..." />
+
+            <Button
+                android:id="@+id/listen_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="44dp"
+                android:text="Listen" />
+
+        </LinearLayout>
+
+    </FrameLayout>
+
+    <FrameLayout
+        android:id="@+id/chat_page"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/bee_page"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <ListView
+                android:id="@+id/chat_list"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/confirm_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/confirm_yes"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="this"
+                    android:contentDescription="this" />
+
+                <Button
+                    android:id="@+id/confirm_cancel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="that"
+                    android:contentDescription="that" />
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/composer"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Ask bee" />
+
+                <Button
+                    android:id="@+id/send_button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Send" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </FrameLayout>
+
+    <FrameLayout
+        android:id="@+id/setup_page"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/bee_page"
+        android:visibility="gone">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="8dp">
+
+                <EditText
+                    android:id="@+id/api_key"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="paste key"
+                    android:inputType="textPassword" />
+
+                <TextView
+                    android:id="@+id/masked_key"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="****" />
+
+                <Button
+                    android:id="@+id/save_key"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Save" />
+
+                <TextView
+                    android:id="@+id/model_spark"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="muse-spark-1.3" />
+
+                <TextView
+                    android:id="@+id/model_wonder"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="muse-wonder-1.0" />
+
+                <TextView
+                    android:id="@+id/model_voice"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="muse-voice-transcribe-1.0" />
+
+                <Button
+                    android:id="@+id/mode_sandbox"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Sandbox" />
+
+                <Button
+                    android:id="@+id/mode_live"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Live" />
+
+                <ToggleButton
+                    android:id="@+id/driving_toggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textOn="Driving On"
+                    android:textOff="Driving Off" />
+
+                <Button
+                    android:id="@+id/play_water"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Play water" />
+
+                <EditText
+                    android:id="@+id/rox_host"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Rox host" />
+
+                <TextView
+                    android:id="@+id/enable_overlay"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="Overlay" />
+
+                <TextView
+                    android:id="@+id/enable_mic"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="Mic" />
+
+                <TextView
+                    android:id="@+id/enable_accessibility"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="Accessibility" />
+
+                <TextView
+                    android:id="@+id/mind_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="mind" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Yes"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Cancel"
+                    android:visibility="gone" />
+
+            </LinearLayout>
+
+        </ScrollView>
+
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/bottom_nav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/nav_island"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:backgroundTint="@color/bee_honey"
+            android:text="Island" />
+
+        <Button
+            android:id="@+id/nav_chat"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Chat" />
+
+        <Button
+            android:id="@+id/nav_setup"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Setup" />
+
+    </LinearLayout>
+
+</LinearLayout>

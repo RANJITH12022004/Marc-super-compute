@@ -1,0 +1,2 @@
+alpha start
+SMOKE_ALPHA=ok

@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bee_page">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- top bar -->
+        <LinearLayout
+            android:id="@+id/top_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/setup_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="bee"
+                android:textColor="@color/bee_ink"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="8dp"
+            android:background="@color/bee_separator" />
+
+        <!-- quiet permission rows -->
+        <TextView
+            android:id="@+id/enable_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/bee_surface"
+            android:clickable="true"
+            android:focusable="true"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="12dp"
+            android:text="Overlay"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/enable_mic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/bee_surface"
+            android:clickable="true"
+            android:focusable="true"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="12dp"
+            android:text="Microphone"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/enable_accessibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/bee_surface"
+            android:clickable="true"
+            android:focusable="true"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="12dp"
+            android:text="Accessibility"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <EditText
+            android:id="@+id/api_key"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/bee_surface"
+            android:hint="paste key"
+            android:inputType="textPassword"
+            android:padding="16dp"
+            android:textColor="@color/bee_ink"
+            android:textColorHint="@color/bee_honey" />
+
+        <TextView
+            android:id="@+id/masked_key"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/bee_surface"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="16dp"
+            android:text="****"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <Button
+            android:id="@+id/save_key"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="@color/bee_honey"
+            android:text="Save key"
+            android:textColor="@color/bee_page" />
+
+        <TextView
+            android:id="@+id/model_spark"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/bee_surface"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="16dp"
+            android:text="muse-spark-1.3"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/model_wonder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/bee_surface"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="16dp"
+            android:text="muse-wonder-1.0"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/model_voice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/bee_surface"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="16dp"
+            android:text="muse-voice-transcribe-1.0"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <RadioGroup
+            android:id="@+id/marc_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/bee_surface"
+            android:orientation="horizontal"
+            android:padding="8dp">
+
+            <RadioButton
+                android:id="@+id/mode_sandbox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="true"
+                android:text="sandbox"
+                android:textColor="@color/bee_ink" />
+
+            <RadioButton
+                android:id="@+id/mode_live"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="live"
+                android:textColor="@color/bee_ink" />
+        </RadioGroup>
+
+        <EditText
+            android:id="@+id/rox_host"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/bee_surface"
+            android:hint="Rox host"
+            android:inputType="textUri"
+            android:padding="16dp"
+            android:textColor="@color/bee_ink"
+            android:textColorHint="@color/bee_honey" />
+
+        <TextView
+            android:id="@+id/mind_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/bee_surface"
+            android:minHeight="44dp"
+            android:gravity="center_vertical"
+            android:padding="16dp"
+            android:text="mind idle"
+            android:textColor="@color/bee_ink"
+            android:textSize="17sp" />
+
+        <Switch
+            android:id="@+id/driving_toggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Driving mode"
+            android:textColor="@color/bee_ink" />
+
+        <Button
+            android:id="@+id/play_water"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:backgroundTint="@color/bee_honey"
+            android:text="Play water"
+            android:textColor="@color/bee_page" />
+    </LinearLayout>
+</ScrollView>

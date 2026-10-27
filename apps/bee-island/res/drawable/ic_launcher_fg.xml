@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Black capsule base, inset to sit in the adaptive-icon safe zone -->
+    <item
+        android:left="18dp"
+        android:right="18dp"
+        android:top="38dp"
+        android:bottom="38dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#000000" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+
+    <!-- Three honey pips, each 6x2dp, centered side by side -->
+    <item
+        android:left="41dp"
+        android:right="61dp"
+        android:top="53dp"
+        android:bottom="53dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#E8B15A" />
+            <corners android:radius="1dp" />
+        </shape>
+    </item>
+    <item
+        android:left="51dp"
+        android:right="51dp"
+        android:top="53dp"
+        android:bottom="53dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#E8B15A" />
+            <corners android:radius="1dp" />
+        </shape>
+    </item>
+    <item
+        android:left="61dp"
+        android:right="41dp"
+        android:top="53dp"
+        android:bottom="53dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#E8B15A" />
+            <corners android:radius="1dp" />
+        </shape>
+    </item>
+</layer-list>
