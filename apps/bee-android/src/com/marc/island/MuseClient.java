@@ -755,4 +755,49 @@ public final class MuseClient {
         }
         return Collections.unmodifiableMap(new LinkedHashMap<String, String>(h));
     }
+
+    /**
+     * POST a prompt and return output text. Never logs the key.
+     */
+    public static String complete(String apiKey, String model, String text)
+            throws java.io.IOException {
+        Map<String, Object> payload = buildPayload(model, text, null, true);
+        String raw = post(apiKey, payload, 120000);
+        return extractOutputText(raw);
+    }
+
+    static String extractOutputText(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return "";
+        }
+        StringBuilder acc = new StringBuilder();
+        for (Map<String, Object> evt : parseSseEvents(raw)) {
+            Object delta = evt.get("delta");
+            if (delta instanceof String) {
+                acc.append((String) delta);
+            } else if (delta instanceof Map) {
+                Object t = ((Map<?, ?>) delta).get("text");
+                if (t instanceof String) {
+                    acc.append((String) t);
+                }
+            }
+            Object text = evt.get("text");
+            if (text instanceof String && "response.output_text.delta".equals(String.valueOf(evt.get("type")))) {
+                acc.append((String) text);
+            }
+        }
+        if (acc.length() > 0) {
+            return acc.toString();
+        }
+        int idx = raw.indexOf("\"output_text\"");
+        if (idx >= 0) {
+            int colon = raw.indexOf(':', idx);
+            int q1 = raw.indexOf('"', colon + 1);
+            int q2 = raw.indexOf('"', q1 + 1);
+            if (q1 >= 0 && q2 > q1) {
+                return raw.substring(q1 + 1, q2);
+            }
+        }
+        return raw.trim().startsWith("{") ? "" : raw.trim();
+    }
 }
