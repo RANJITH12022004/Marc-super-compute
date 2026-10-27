@@ -405,26 +405,530 @@ def _call_spark(text, session_id, target, note, context):
         return None
 
 
-def plan(text="", session_id="phone", target="auto", note="", context=None):
-    sid = (session_id or "phone").strip() or "phone"
-    if is_stopped():
-        return {"reply": "Muse isn't running.", "session_id": sid, "plan": []}
-    if is_paused():
-        return {"reply": "Muse budget paused.", "session_id": sid, "plan": []}
+# ------------------------------------------------- voice_gate + driving ---
 
-    raw = text or note or ""
-    raw = raw.strip() if isinstance(raw, str) else str(raw).strip()
+def _normalize_classify_result(res, raw):
+    """Normalize voice_gate.classify output to (kind, remainder)."""
+    kind = None
+    remainder = ""
+    try:
+        if isinstance(res, (tuple, list)):
+            if len(res) >= 1:
+                kind = res[0]
+            if len(res) >= 2:
+                remainder = res[1]
+        elif isinstance(res, dict):
+            kind = (
+                res.get("action")
+                or res.get("kind")
+                or res.get("intent")
+                or res.get("type")
+                or res.get("label")
+                or res.get("command")
+            )
+            remainder = (
+                res.get("remainder")
+                or res.get("rest")
+                or res.get("remainder_text")
+                or res.get("text")
+                or res.get("utterance")
+                or res.get("query")
+                or ""
+            )
+            if kind is None:
+                for _k in (
+                    "refuse", "sleep", "stop_marc", "stop", "confirm",
+                    "cancel", "ignore", "wake", "utterance",
+                ):
+                    if res.get(_k):
+                        kind = _k
+                        break
+        else:
+            kind = res
+            remainder = raw
+    except Exception:
+        return None
+    if kind is None:
+        return None
+    try:
+        kind_s = str(kind).strip().lower().replace("-", "_").replace(" ", "_")
+    except Exception:
+        return None
+    if not isinstance(remainder, str):
+        try:
+            remainder = str(remainder) if remainder is not None else ""
+        except Exception:
+            remainder = ""
+    return (kind_s, remainder)
+
+
+def _fallback_classify(text):
+    """Local voice-gate fallback when voice_gate module is absent."""
+    raw = text or ""
+    low = raw.strip().lower()
+    stripped = low.strip(" ,.!?;:")
+    # hard-refuse patterns double as voice refuse
+    try:
+        if raw and is_refused(raw):
+            return ("refuse", "")
+    except Exception:
+        pass
+    # exact wake words -> wake with empty remainder
+    if stripped in (
+        "hey marc", "hi marc", "hello marc", "ok marc", "okay marc",
+        "hey muse", "hi muse", "hello muse", "marc", "muse",
+        "wake", "wake up", "wake up marc", "hey marc wake",
+    ):
+        return ("wake", "")
+    # wake prefix with remainder, e.g. "hey marc open youtube"
+    _wake_prefixes = (
+        "hey marc", "hi marc", "hello marc", "ok marc", "okay marc",
+        "hey muse", "hi muse", "hello muse", "marc,", "marc",
+        "muse,", "muse",
+    )
+    for pref in sorted(_wake_prefixes, key=len, reverse=True):
+        if low.startswith(pref):
+            rest = raw[len(pref):].strip()
+            rest = rest.lstrip(" ,:;-").strip()
+            if not rest:
+                return ("wake", "")
+            return ("wake", rest)
+    # sleep / stop marc -> stopped
+    if re.search(r"\bstop\s+marc\b", low) or re.search(r"\bstop\s+muse\b", low):
+        return ("stop_marc", "")
+    if re.search(r"\bsleep\b", low):
+        return ("sleep", "")
+    if stripped in ("stop", "stop it", "stop now", "stop marc", "stop muse"):
+        return ("stop_marc", "")
+    # ignore -> background / not for marc
+    if re.search(r"\bignore\b", low):
+        return ("ignore", "")
+    # confirm (short yes-like utterances)
+    if stripped in (
+        "yes", "y", "yep", "yeah", "yup", "confirm", "confirmed",
+        "send", "send it", "do it", "ok", "okay",
+        "yes send", "yes send it", "confirm send", "ok send",
+    ):
+        return ("confirm", "")
+    if re.match(r"^\s*(yes|yep|yeah|yup|confirm|confirmed)\b", low):
+        return ("confirm", "")
+    # cancel
+    if re.search(r"\bcancel\b", low):
+        return ("cancel", "")
+    if stripped in ("no", "nope", "cancel", "never mind", "nevermind"):
+        return ("cancel", "")
+    if re.match(r"^\s*(no|nope|cancel)\b", low):
+        return ("cancel", "")
+    if re.search(r"\bdon'?t send\b", low) or re.search(r"\bnever ?mind\b", low):
+        return ("cancel", "")
+    return ("utterance", raw)
+
+
+def _voice_classify(raw, context=None):
+    """Classify via voice_gate.classify with local fallback."""
+    try:
+        import sys as _sys
+
+        _vg = None
+        try:
+            import voice_gate as _vg_imported  # type: ignore
+            _vg = _vg_imported
+        except Exception:
+            try:
+                _vg = _sys.modules.get("voice_gate")
+            except Exception:
+                _vg = None
+        if _vg is not None:
+            fn = getattr(_vg, "classify", None)
+            if callable(fn):
+                res = None
+                try:
+                    res = fn(raw)
+                except TypeError:
+                    try:
+                        res = fn(raw, context)
+                    except TypeError:
+                        try:
+                            res = fn(text=raw)
+                        except Exception:
+                            res = None
+                except Exception:
+                    res = None
+                if res is not None:
+                    parsed = _normalize_classify_result(res, raw)
+                    if parsed is not None:
+                        return parsed
+    except Exception:
+        pass
+    return _fallback_classify(raw or "")
+
+
+def _resolve_driving(raw_context):
+    """Return True when driving context is active.
+
+    Accepts context as None (reads MARC_CONTEXT/CONTEXT), str, dict, or
+    an object exposing .context / .shorten / .profile / .is_driving.
+    """
+    ctx = raw_context
+    if isinstance(ctx, str):
+        v = ctx.strip().lower()
+        if v == "driving":
+            return True
+        if v in ("desk", ""):
+            return False
+        # unknown string -> fall through to env
+    elif isinstance(ctx, dict):
+        for _k in ("context", "MARC_CONTEXT", "CONTEXT"):
+            try:
+                _v = ctx.get(_k)
+            except Exception:
+                _v = None
+            if isinstance(_v, str):
+                _vv = _v.strip().lower()
+                if _vv == "driving":
+                    return True
+                if _vv == "desk":
+                    return False
+        try:
+            if ctx.get("driving") is True or ctx.get("is_driving") is True:
+                return True
+            if ctx.get("driving") is False or ctx.get("is_driving") is False:
+                return False
+        except Exception:
+            pass
+        try:
+            if callable(ctx.get("shorten")):
+                return True
+        except Exception:
+            pass
+        try:
+            if ctx.get("profile") is not None:
+                return True
+        except Exception:
+            pass
+        # inconclusive dict -> fall through to env
+    elif ctx is not None:
+        try:
+            _cval = getattr(ctx, "context", None)
+            if isinstance(_cval, str):
+                if _cval.strip().lower() == "driving":
+                    return True
+                if _cval.strip().lower() == "desk":
+                    return False
+        except Exception:
+            pass
+        try:
+            _iv = getattr(ctx, "is_driving", None)
+            if callable(_iv):
+                try:
+                    if bool(_iv()):
+                        return True
+                except Exception:
+                    pass
+            elif isinstance(_iv, bool):
+                return bool(_iv)
+        except Exception:
+            pass
+        try:
+            if callable(getattr(ctx, "shorten", None)):
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(ctx, "profile", None) is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(ctx, "driving", None) is True:
+                return True
+            if getattr(ctx, "driving", None) is False:
+                return False
+        except Exception:
+            pass
+        # inconclusive object -> fall through to env
+    # env fallback: MARC_CONTEXT takes precedence over CONTEXT (config parity).
+    try:
+        _marc = (os.environ.get("MARC_CONTEXT") or "").strip().lower()
+        if _marc in ("driving", "desk"):
+            return _marc == "driving"
+        _alias = (os.environ.get("CONTEXT") or "").strip().lower()
+        if _alias in ("driving", "desk"):
+            return _alias == "driving"
+    except Exception:
+        pass
+    return False
+
+
+def _drive_shorten_fallback(s):
+    """Shorten a reply for driving: keep short replies exact, trim long ones."""
+    if not s:
+        return s
+    t = str(s)
+    # Preserve short voice-gate replies exactly (Sending., Stopping., etc.).
+    if len(t) <= 80 and t.count(".") <= 1 and t.count("!") <= 1 and t.count("?") <= 1:
+        return t
+    parts = re.split(r"(?<=[.!?])\s+", t.strip())
+    first = parts[0].strip() if parts and parts[0].strip() else t.strip()
+    if len(first) > 80:
+        first = first[:77].rstrip() + "..."
+    return first or t
+
+
+def _apply_driving_shorten(reply, raw_context):
+    """Shorten every driving reply via context.shorten when available."""
+    if not reply:
+        return reply
+    try:
+        if isinstance(raw_context, dict):
+            try:
+                _fn = raw_context.get("shorten")
+                if callable(_fn):
+                    _out = _fn(reply)
+                    if isinstance(_out, str) and _out:
+                        return _out
+            except Exception:
+                pass
+            try:
+                _prof = raw_context.get("profile")
+                if isinstance(_prof, dict):
+                    _fn2 = _prof.get("shorten")
+                    if callable(_fn2):
+                        _out = _fn2(reply)
+                        if isinstance(_out, str) and _out:
+                            return _out
+                elif _prof is not None:
+                    _fn2 = getattr(_prof, "shorten", None)
+                    if callable(_fn2):
+                        _out = _fn2(reply)
+                        if isinstance(_out, str) and _out:
+                            return _out
+            except Exception:
+                pass
+        elif raw_context is not None and not isinstance(raw_context, str):
+            try:
+                _fn = getattr(raw_context, "shorten", None)
+                if callable(_fn):
+                    _out = _fn(reply)
+                    if isinstance(_out, str) and _out:
+                        return _out
+            except Exception:
+                pass
+            try:
+                _prof = getattr(raw_context, "profile", None)
+                if _prof is not None:
+                    if isinstance(_prof, dict):
+                        _fn2 = _prof.get("shorten")
+                    else:
+                        _fn2 = getattr(_prof, "shorten", None)
+                    if callable(_fn2):
+                        _out = _fn2(reply)
+                        if isinstance(_out, str) and _out:
+                            return _out
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return _drive_shorten_fallback(reply)
+
+
+def _driving_cap(raw_context):
+    """Hop cap for driving via context.profile hop_cap (default 6)."""
+    _default = 6
+    try:
+        if isinstance(raw_context, dict):
+            try:
+                _prof = raw_context.get("profile")
+                if isinstance(_prof, dict) and "hop_cap" in _prof:
+                    return max(0, int(_prof["hop_cap"]))
+                if _prof is not None and not isinstance(_prof, dict):
+                    _hc = getattr(_prof, "hop_cap", None)
+                    if callable(_hc):
+                        _hc = _hc()
+                    if _hc is not None:
+                        return max(0, int(_hc))
+            except Exception:
+                pass
+            try:
+                if "hop_cap" in raw_context:
+                    return max(0, int(raw_context["hop_cap"]))
+            except Exception:
+                pass
+        elif raw_context is not None and not isinstance(raw_context, str):
+            try:
+                _prof = getattr(raw_context, "profile", None)
+                if _prof is not None:
+                    if isinstance(_prof, dict):
+                        if "hop_cap" in _prof:
+                            return max(0, int(_prof["hop_cap"]))
+                    else:
+                        _hc = getattr(_prof, "hop_cap", None)
+                        if callable(_hc):
+                            _hc = _hc()
+                        if _hc is not None:
+                            return max(0, int(_hc))
+            except Exception:
+                pass
+            try:
+                _hc = getattr(raw_context, "hop_cap", None)
+                if _hc is not None:
+                    if callable(_hc):
+                        _hc = _hc()
+                    return max(0, int(_hc))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return _default
+
+
+def plan(text="", session_id="phone", target="auto", note="", context=None, pending_confirm=False, **kwargs):
+    sid = (session_id or "phone").strip() or "phone"
+    # pending_confirm may arrive via kwargs aliases.
+    if not pending_confirm:
+        for _k in ("pending_confirm", "pending", "awaiting_confirm", "confirm_pending"):
+            try:
+                if kwargs.get(_k):
+                    pending_confirm = bool(kwargs.get(_k))
+                    break
+            except Exception:
+                continue
+    raw_context = context
+    if raw_context is None:
+        for _k in ("context", "marc_context", "MARC_CONTEXT"):
+            try:
+                if kwargs.get(_k) is not None:
+                    raw_context = kwargs.get(_k)
+                    break
+            except Exception:
+                continue
+    # pending_confirm may also hide inside a dict context.
+    if not pending_confirm and isinstance(raw_context, dict):
+        try:
+            if raw_context.get("pending_confirm"):
+                pending_confirm = True
+        except Exception:
+            pass
+    is_drive = _resolve_driving(raw_context)
+
+    def _maybe_shorten(reply):
+        if is_drive:
+            try:
+                return _apply_driving_shorten(reply, raw_context)
+            except Exception:
+                return reply
+        return reply
+
+    raw_input = text or note or ""
+    raw_input = raw_input.strip() if isinstance(raw_input, str) else str(raw_input).strip()
+
+    # Voice-gate classify at the start.
+    if raw_input:
+        kind, remainder = _voice_classify(raw_input, raw_context)
+    else:
+        kind, remainder = ("utterance", raw_input)
+    k = (kind or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    if k == "refuse":
+        return {"reply": "I can't do that.", "session_id": sid, "plan": []}
+    if k in ("sleep", "stop", "stop_marc", "stop_muse", "sleep_marc", "go_to_sleep"):
+        try:
+            set_stopped()
+        except Exception:
+            pass
+        return {"reply": _maybe_shorten("Stopping."), "session_id": sid, "plan": []}
+    if k in ("confirm", "confirmed", "yes", "approve", "accept"):
+        if pending_confirm:
+            return {
+                "reply": _maybe_shorten("Sending."),
+                "session_id": sid,
+                "plan": [],
+                "confirmed": True,
+            }
+    if k in ("cancel", "cancelled", "canceled", "no", "deny", "reject"):
+        if pending_confirm:
+            return {
+                "reply": _maybe_shorten("Cancelled. Nothing sent."),
+                "session_id": sid,
+                "plan": [],
+                "confirmed": False,
+                "cancelled": True,
+            }
+    if k in ("ignore", "ignored"):
+        return {"reply": "", "session_id": sid, "plan": [], "ignored": True}
+    if k in ("wake", "wake_up", "hey_marc", "hi_marc", "hello"):
+        rem = (remainder or "").strip() if isinstance(remainder, str) else ""
+        if not rem:
+            return {
+                "reply": _maybe_shorten("I'm listening."),
+                "session_id": sid,
+                "plan": [],
+                "listening": True,
+            }
+        raw_input = rem
+
+    if is_stopped():
+        return {"reply": _maybe_shorten("Muse isn't running."), "session_id": sid, "plan": []}
+    if is_paused():
+        return {"reply": _maybe_shorten("Muse budget paused."), "session_id": sid, "plan": []}
+
+    raw = raw_input.strip() if isinstance(raw_input, str) else str(raw_input).strip()
     if not raw:
-        return {"reply": "Say that again?", "session_id": sid, "plan": []}
+        return {"reply": _maybe_shorten("Say that again?"), "session_id": sid, "plan": []}
     if is_refused(raw):
         return {"reply": "I can't do that.", "session_id": sid, "plan": []}
 
     local = _local_plan(raw, sid, target)
     if local.get("plan"):
+        if is_drive:
+            try:
+                cap = _driving_cap(raw_context)
+            except Exception:
+                cap = 6
+            try:
+                pl = local.get("plan") or []
+                if isinstance(pl, list) and len(pl) > cap:
+                    pl = pl[:cap]
+                    local["plan"] = pl
+                    try:
+                        local["reply"] = _short_reply(pl, raw)
+                    except Exception:
+                        pass
+                local["reply"] = _apply_driving_shorten(local.get("reply") or "", raw_context)
+            except Exception:
+                pass
         return local
 
-    spark = _call_spark(raw, sid, target, note, context)
+    # Serializable context for spark (never pass live objects with methods).
+    spark_ctx = raw_context
+    if spark_ctx is not None and not isinstance(spark_ctx, (dict, str, list, int, float, bool)):
+        try:
+            _cval = getattr(spark_ctx, "context", None)
+            if isinstance(_cval, str):
+                spark_ctx = _cval
+            else:
+                spark_ctx = str(spark_ctx)
+        except Exception:
+            spark_ctx = None
+    spark = _call_spark(raw, sid, target, note, spark_ctx)
     if spark is not None:
+        if is_drive:
+            try:
+                cap = _driving_cap(raw_context)
+            except Exception:
+                cap = 6
+            try:
+                pl = spark.get("plan") or []
+                if isinstance(pl, list) and len(pl) > cap:
+                    spark["plan"] = pl[:cap]
+            except Exception:
+                pass
+            try:
+                spark["reply"] = _apply_driving_shorten(spark.get("reply") or "On it.", raw_context)
+            except Exception:
+                pass
+        spark.setdefault("reply", "On it.")
+        spark.setdefault("session_id", sid)
         return spark
     # Sandbox boot without a key: valid contract, no crash.
-    return {"reply": "Got it — nothing to do yet.", "session_id": sid, "plan": []}
+    return {"reply": _maybe_shorten("Got it — nothing to do yet."), "session_id": sid, "plan": []}
