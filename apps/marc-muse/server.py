@@ -527,6 +527,17 @@ class Handler(BaseHTTPRequestHandler):
                 "hops": {"max_hops": mx, "hard_hops": hd},
             })
             return
+        if path == "/island":
+            if not self._need_auth():
+                return
+            try:
+                import island
+                body = island.snapshot()
+                body["ok"] = True
+            except Exception:
+                body = {"ok": True, "state": "idle", "line": "", "agents": []}
+            self._send(200, body)
+            return
         if path == "/mind":
             if not self._need_auth():
                 return
@@ -619,6 +630,54 @@ class Handler(BaseHTTPRequestHandler):
                 context=data.get("context"),
             )
             self._send(200, result)
+            return
+        if path == "/utterance":
+            data = self._read_json()
+            text = data.get("text") or ""
+            if not str(text).strip():
+                self._send(400, {"ok": False, "error": "empty text"})
+                return
+            context = data.get("context") or os.environ.get("MARC_CONTEXT") or "desk"
+            source = data.get("source") or data.get("session_id") or "phone"
+            try:
+                import island
+                island.set_state("listen")
+            except Exception:
+                pass
+            result = planner.plan(
+                text=text,
+                session_id=source,
+                target=data.get("target", "auto"),
+                note=data.get("note", ""),
+                context=context,
+            )
+            plan = result.get("plan") or []
+            try:
+                import island
+                island.set_state("plan")
+                names = []
+                import agents as _ag
+                names = [a.get("name") for a in _ag.spawn(plan)]
+                island.set_state("wave", agents=names)
+                if any(s.get("confirm") for s in plan):
+                    island.set_state("confirm", agents=names)
+            except Exception:
+                pass
+            snap = {}
+            try:
+                import island
+                snap = island.snapshot()
+            except Exception:
+                snap = {}
+            self._send(200, {
+                "ok": True,
+                "reply": result.get("reply", ""),
+                "session_id": result.get("session_id") or source,
+                "plan": plan,
+                "island": snap,
+                "source": source,
+                "context": context,
+            })
             return
         if path == "/run":
             data = self._read_json()
