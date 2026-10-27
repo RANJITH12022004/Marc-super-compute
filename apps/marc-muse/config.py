@@ -5,6 +5,7 @@ aliases are accepted for convenience):
 
 - ``MARC_PLANNER`` / ``PLANNER``: planner identifier (default "").
 - ``MARC_MODE`` / ``MODE``: ``sandbox`` (default) or ``live`` / others.
+- ``MARC_CONTEXT`` / ``CONTEXT``: ``desk`` (default) or ``driving``.
 - ``MARC_BIND`` / ``BIND`` / ``HOST``: bind address (default ``127.0.0.1``).
 - ``MARC_PORT`` / ``PORT``: port (default ``8096``).
 - ``MARC_TOKEN`` / ``TOKEN`` / ``MARC_AUTH_TOKEN``: auth token (default "").
@@ -66,6 +67,14 @@ def _parse_confirm_tools(raw: str) -> frozenset[str]:
     return frozenset(p for p in parts if p)
 
 
+def _normalize_context(raw: str | None) -> str:
+    """Normalize a raw context value to ``desk`` or ``driving``."""
+    value = str(raw or "").strip().lower()
+    if value in ("desk", "driving"):
+        return value
+    return "desk"
+
+
 @dataclass(frozen=True)
 class Settings:
     planner: str = ""
@@ -88,6 +97,7 @@ class Settings:
     meta_phone_number_id: str = ""
     meta_verify_token: str = ""
     google_token_path: Path = field(default_factory=lambda: Path("./var/mind/google_token.json"))
+    context: str = "desk"
 
 
 def load_settings(env: dict[str, str] | None = None) -> Settings:
@@ -128,6 +138,9 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     else:
         google_token_path = mind_dir / "google_token.json"
 
+    context_raw = pick("MARC_CONTEXT", "CONTEXT", default="desk")
+    context = _normalize_context(context_raw)
+
     return Settings(
         planner=pick("MARC_PLANNER", "PLANNER", default=""),
         mode=pick("MARC_MODE", "MODE", default="sandbox"),
@@ -161,6 +174,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             "META_VERIFY_TOKEN", "MARC_VERIFY_TOKEN", default=""
         ),
         google_token_path=google_token_path,
+        context=context,
     )
 
 
@@ -178,6 +192,28 @@ def is_sandbox(mode: str | None = None) -> bool:
     return str(current or "").strip().lower() == "sandbox"
 
 
+def is_driving(context: str | Settings | None = None) -> bool:
+    """Return True only when the context is ``driving``."""
+    if context is None:
+        current = SETTINGS.context
+    elif isinstance(context, Settings):
+        current = context.context
+    else:
+        current = str(context or "")
+    return current.strip().lower() == "driving"
+
+
+def hop_cap(context: str | Settings | None = None) -> int:
+    """Return the hop cap: 6 when driving, else ``max_hops`` (default 8)."""
+    if isinstance(context, Settings):
+        if context.context.strip().lower() == "driving":
+            return 6
+        return context.max_hops
+    if is_driving(context):
+        return 6
+    return SETTINGS.max_hops
+
+
 def require_confirm(tool: str, confirm: frozenset[str] | None = None) -> bool:
     """Return True when *tool* requires explicit confirmation."""
     tools = confirm if confirm is not None else SETTINGS.confirm_tools
@@ -190,5 +226,7 @@ __all__ = [
     "get_settings",
     "load_settings",
     "is_sandbox",
+    "is_driving",
+    "hop_cap",
     "require_confirm",
 ]
