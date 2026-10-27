@@ -6,6 +6,8 @@ Cursor **plans**, Muse **codes in the terminal**. That spends [Meta Model API](h
 
 Live spec: [`docs/marc_prd.md`](docs/marc_prd.md) — read that before changing agent behavior.
 
+Hackathon ride demo: [`docs/marc_ride_prd.md`](docs/marc_ride_prd.md) and the 90s checklist in [`deploy/demo/README.md`](deploy/demo/README.md).
+
 - `apps/marc-muse` — Rox planner (Python, `:8096`).
 - `deploy/rox` — systemd bundle for Rox (api, desk, muse, Office runner).
 - `MARC_MODE=sandbox` by default. Don't run unconfined unless asked.
