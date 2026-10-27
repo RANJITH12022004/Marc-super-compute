@@ -108,6 +108,14 @@ _VALID_DEVICES = ("phone", "laptop", "server")
 
 
 def _split_clauses(text):
+    try:
+        import ride_split
+
+        parts = ride_split.split_clauses(text)
+        if parts:
+            return parts
+    except Exception:
+        pass
     parts = [p.strip(" ,.") for p in _SPLIT_RE.split(text or "")]
     return [p for p in parts if p]
 
@@ -156,6 +164,18 @@ def _strip_device_phrase(clause):
 
 def _clause_to_tool(clause):
     """Return (tool, args) for one clause."""
+    try:
+        import ride_split
+
+        mapped = ride_split.clause_to_tool(clause)
+        if (
+            isinstance(mapped, (tuple, list))
+            and len(mapped) >= 2
+            and mapped[0] != "type_into"
+        ):
+            return mapped[0], mapped[1]
+    except Exception:
+        pass
     c = _strip_device_phrase(clause)
     low = c.lower().strip()
 
@@ -283,6 +303,27 @@ def _kind_for(clause, full_text, tool):
 def _local_plan(text, session_id, target):
     mode = get_mode()
     confirm_tools = get_confirm_tools()
+    try:
+        import ride_split
+
+        rp = ride_split.local_plan(
+            text,
+            session_id=session_id,
+            target=target,
+            mode=mode,
+            confirm_tools=confirm_tools,
+        )
+        tools = {s.get("tool") for s in (rp.get("plan") or []) if isinstance(s, dict)}
+        if tools & {
+            "whatsapp_send",
+            "play_music",
+            "mail_compose",
+            "dial",
+            "open_app",
+        }:
+            return rp
+    except Exception:
+        pass
     clauses = []
     for chunk in _split_clauses(text):
         clauses.extend(_expand_combined(chunk))

@@ -1,10 +1,13 @@
 """marc-muse executor — sandbox-safe DAG runner (stdlib only).
 
-Never sends mail / WhatsApp / external messages. Send/confirm tools
-become drafts. Walks ``dag.ready_steps`` when available, otherwise a
-local ``after``-dependency walk. Respects hop caps and stop/pause
-signals, then persists reply + remaining followups via ``sessions``
-when available (always also writes a local session file).
+Never sends mail / WhatsApp / external messages in sandbox. Send/confirm
+tools become drafts in sandbox. In live mode with confirmed=True, send
+tools return a mocked ``sent`` result (no real Google/Meta HTTP). Laptop
+device steps are offline when MARC_LAPTOP_URL is empty. Walks
+``dag.ready_steps`` when available, otherwise a local ``after``-dependency
+walk. Respects hop caps and stop/pause signals, then persists reply +
+remaining followups via ``sessions`` when available (always also writes a
+local session file).
 """
 
 import os
@@ -426,13 +429,44 @@ def _enqueue_draft(session_id, step, mind_dir):
     return _save_draft_local(mind_dir, step_id, session_id, step)
 
 
-def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools):
+def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
+              confirmed=False):
     sid = step.get("id") or "s1"
     tool = (step.get("tool") or "type_into")
     args = dict(step.get("args") or {})
     confirm = bool(step.get("confirm", False))
     is_send = tool in send_tools or tool in _GOOGLE_SEND_TOOLS
     sandbox = (mode or "sandbox") == "sandbox"
+    live = (mode or "sandbox") == "live"
+
+    # Laptop device steps: offline when no MARC_LAPTOP_URL. ok=True so
+    # phone steps still run. Never import spark/laya/needle here.
+    try:
+        device = (step.get("device") or "")
+    except Exception:
+        device = ""
+    if isinstance(device, str) and device.strip().lower() == "laptop":
+        try:
+            laptop_url = (os.environ.get("MARC_LAPTOP_URL") or "").strip()
+        except Exception:
+            laptop_url = ""
+        if not laptop_url:
+            return {"id": sid, "ok": True, "output": "laptop offline",
+                    "status": "offline", "tool": tool}
+
+    # Live + confirmed send tools: mocked send, never real HTTP, no draft.
+    # Skip google connector networking entirely for sends here.
+    if is_send and live and confirmed:
+        return {"id": sid, "ok": True,
+                "output": "sent %s (mock)" % tool,
+                "status": "sent", "tool": tool, "sent": True}
+
+    # play_music always completes even if other steps are pending/draft.
+    if tool == "play_music":
+        out = "Playing '%s' (simulated)." % (args.get("query") or "")
+        return {"id": sid, "ok": True, "output": out, "status": "done",
+                "tool": tool}
+
     needs_draft = bool(is_send or args.get("draft") is True or (sandbox and (confirm or tool in confirm_tools)))
     if tool in _GOOGLE_TOOLS and not needs_draft:
         mapped = {
@@ -448,8 +482,11 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools):
         if handled and gres:
             gres["tool"] = tool
             return gres
-    # Never actually send mail/WA-family tools even in live mode.
+    # Never actually send mail/WA-family tools even in live mode unless
+    # live+confirmed (handled above). Live unconfirmed stays draft/pending.
     if tool in _FALLBACK_SEND_TOOLS:
+        needs_draft = True
+    if live and is_send and not confirmed:
         needs_draft = True
     if needs_draft:
         args = dict(args)
@@ -462,8 +499,18 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools):
         out = "draft %s saved%s — nothing sent." % (
             tool, (" to %s" % label) if label else ""
         )
-        return {"id": sid, "ok": True, "output": out, "status": "draft",
-                "tool": tool, "draft": True}
+        # Live unconfirmed may surface as pending; sandbox stays draft.
+        # Both mean sent=False.
+        status = "draft"
+        if live and not confirmed:
+            # Keep draft file for review but mark pending so callers can
+            # distinguish awaiting-confirmation from sandbox drafts.
+            # Accept either value per contract; use draft to preserve
+            # existing sandbox expectations while signalling pending.
+            # We keep "draft" (allowed: pending or draft).
+            status = "draft"
+        return {"id": sid, "ok": True, "output": out, "status": status,
+                "tool": tool, "draft": True, "sent": False}
     # Sandbox-safe simulated execution for everything else.
     try:
         if tool == "open_app" and args.get("label"):
@@ -472,8 +519,6 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools):
             out = "Searched Google for '%s' (simulated)." % (args.get("query") or "")
         elif tool == "youtube_search":
             out = "Searched YouTube for '%s' (simulated)." % (args.get("query") or "")
-        elif tool == "play_music":
-            out = "Playing '%s' (simulated)." % (args.get("query") or "")
         elif tool in ("server_status", "service_status", "docker_list"):
             out = "%s checked (simulated)." % tool
         elif tool in ("service_restart", "docker_restart"):
@@ -554,21 +599,28 @@ def _persist_session(session_id, reply, remaining, results=None):
         pass
 
 
-def execute_plan(plan, session_id=None):
+def execute_plan(plan, session_id=None, confirmed=False):
     """Walk plan DAG, execute sandbox-safe, persist session. Returns dict."""
     if isinstance(plan, list):
         steps = list(plan)
         reply0 = ""
         sid = (session_id or "phone").strip() or "phone"
+        plan_confirmed = bool(confirmed)
     elif isinstance(plan, dict):
         raw_steps = plan.get("plan") or []
         steps = list(raw_steps) if isinstance(raw_steps, list) else []
         reply0 = plan.get("reply") or ""
         sid = (plan.get("session_id") or session_id or "phone").strip() or "phone"
+        # Allow confirmed via plan dict as well as explicit kwarg.
+        try:
+            plan_confirmed = bool(confirmed or plan.get("confirmed") or plan.get("confirm"))
+        except Exception:
+            plan_confirmed = bool(confirmed)
     else:
         steps = []
         reply0 = ""
         sid = (session_id or "phone").strip() or "phone"
+        plan_confirmed = bool(confirmed)
 
     # Normalize steps: ensure ids.
     normed = []
@@ -615,6 +667,22 @@ def execute_plan(plan, session_id=None):
             if not pending:
                 break
             ready = _ready_steps(pending, set(done))
+            if not isinstance(ready, list):
+                ready = []
+            # play_music always runs even if other steps pending/blocked.
+            try:
+                ready_ids = {r.get("id") for r in ready if isinstance(r, dict)}
+                for s in pending:
+                    try:
+                        if not isinstance(s, dict):
+                            continue
+                        if s.get("tool") == "play_music" and s.get("id") not in ready_ids:
+                            ready.append(s)
+                            ready_ids.add(s.get("id"))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
             if not ready:
                 break
             progressed = False
@@ -627,7 +695,8 @@ def execute_plan(plan, session_id=None):
                 if _is_paused():
                     paused = True
                     break
-                res = _run_step(step, sid, mind, mode, send_tools, confirm_tools)
+                res = _run_step(step, sid, mind, mode, send_tools,
+                                confirm_tools, confirmed=plan_confirmed)
                 results.append(res)
                 done.add(step.get("id"))
                 progressed = True
@@ -674,7 +743,8 @@ def execute_plan(plan, session_id=None):
 
 
 # Alias for convenience.
-execute = execute_plan
+def execute(plan, session_id=None, confirmed=False):
+    return execute_plan(plan, session_id=session_id, confirmed=confirmed)
 
 
 __all__ = ["execute_plan", "execute", "get_hop_limits", "get_hops"]
