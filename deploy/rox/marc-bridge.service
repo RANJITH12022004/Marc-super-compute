@@ -1,0 +1,17 @@
+# marc bridge — door pull -> loopback muse -> door result. No listen sockets.
+[Unit]
+Description=marc bridge (door pull to loopback muse)
+After=network-online.target marc-muse.service marc-door.service
+Wants=network-online.target
+
+[Service]
+User=rox
+WorkingDirectory=/home/rox/marc-muse
+ExecStart=/usr/bin/python3 /home/rox/marc-muse/apps/server/bridge/bridge.py
+EnvironmentFile=-/home/rox/marc-muse.env
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

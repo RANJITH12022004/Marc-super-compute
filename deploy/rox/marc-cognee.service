@@ -1,0 +1,18 @@
+# marc-cognee — optional oneshot. Local-only: no public Bind, no listeners.
+# Never bind :8096 or any public port. No Needle / ollama / laya.
+[Unit]
+Description=marc-cognee local memory warmup (oneshot, optional)
+After=network.target
+
+[Service]
+Type=oneshot
+User=rox
+WorkingDirectory=/home/rox/marc
+ExecStart=/usr/bin/python3 -c "from apps.server.cognee import remember; remember('cognee warmup')"
+EnvironmentFile=-/home/rox/marc-muse.env
+# TELEMETRY_DISABLED=true (conceptual): cognee adapter makes no outbound calls.
+RemainAfterExit=yes
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

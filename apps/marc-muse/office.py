@@ -263,11 +263,42 @@ def _find_task_file(task_id, workdir):
     return candidates[0] if candidates else _task_path(task_id, workdir)
 
 
+def _hermes_client():
+    try:
+        import importlib.util as _ilu
+
+        here = Path(__file__).resolve().parent
+        cand = here.parent / "server" / "hermes" / "client.py"
+        if not cand.is_file():
+            return None
+        spec = _ilu.spec_from_file_location("_marc_office_hermes", str(cand))
+        if spec is None or spec.loader is None:
+            return None
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
 def start_task(goal, workdir=DEFAULT_WORKDIR) -> dict:
     """Start an office task; write office md + mind sessions office md."""
     cap = _hop_cap()
     goal_text = _one_line(goal)
     task_id = _new_task_id()
+    hermes = _hermes_client()
+    if hermes is not None:
+        run = getattr(hermes, "project_run", None)
+        if callable(run):
+            try:
+                res = run(goal_text)
+                if isinstance(res, dict):
+                    res.setdefault("ok", True)
+                    res.setdefault("id", task_id)
+                    res.setdefault("goal", goal_text)
+                    return res
+            except Exception:
+                pass
     key = (os.environ.get("MODEL_API_KEY") or "").strip()
     hops: list[str] = []
     if key and key != "LLM_...":
@@ -360,6 +391,14 @@ def continue_task(task_id, note, workdir=DEFAULT_WORKDIR) -> dict:
 
 def stop_task(task_id, workdir=DEFAULT_WORKDIR) -> dict:
     """Mark the task stopped and signal the planner via set_stopped."""
+    hermes = _hermes_client()
+    if hermes is not None:
+        stopper = getattr(hermes, "project_stop", None)
+        if callable(stopper):
+            try:
+                stopper()
+            except Exception:
+                pass
     try:
         mod = globals().get("planner")
         setter = getattr(mod, "set_stopped", None) if mod is not None else None

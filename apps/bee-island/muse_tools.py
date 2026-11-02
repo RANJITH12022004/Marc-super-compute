@@ -103,6 +103,94 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "wait_ms",
+            "description": "Wait for a number of milliseconds",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ms": {"type": "integer", "description": "Milliseconds to wait"},
+                },
+                "required": ["ms"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_text",
+            "description": "Click the on-screen node matching text",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to click"},
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "auto_scroll",
+            "description": "Keep swiping in the current app until stop",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "description": "Swipe direction"},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "swipe",
+            "description": "Swipe in a direction",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "description": "Swipe direction"},
+                },
+                "required": ["direction"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scroll",
+            "description": "Scroll in a direction",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "description": "Scroll direction"},
+                },
+                "required": ["direction"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "press_back",
+            "description": "Press the back button",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 _NAME_ALIASES = {
@@ -203,6 +291,56 @@ def build_complete_payload(model, text, mind_context=None):
     payload.pop("Authorization", None)
     payload.pop("authorization", None)
     return payload
+
+
+def build_transcribe_payload(b64_audio, fmt="m4a"):
+    """Build a Responses API payload for audio transcription.
+
+    Uses the VOICE model with a single user message containing an
+    input_audio content part. Contains no tools and no Authorization
+    (auth belongs in headers, not the body).
+    """
+    return {
+        "model": VOICE,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": b64_audio, "format": fmt},
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def parse_transcript(obj):
+    """Extract transcript text from a Muse response object.
+
+    Checks output_text / transcript / text fields on a dict, or walks a
+    nested output list. Returns "" on miss.
+    """
+    if isinstance(obj, dict):
+        for key in ("output_text", "transcript", "text"):
+            val = obj.get(key)
+            if isinstance(val, str) and val:
+                return val
+        output = obj.get("output")
+        if isinstance(output, list):
+            for item in output:
+                result = parse_transcript(item)
+                if result:
+                    return result
+        return ""
+    if isinstance(obj, list):
+        for item in obj:
+            result = parse_transcript(item)
+            if result:
+                return result
+        return ""
+    return ""
 
 
 def _coerce_args(raw):
@@ -317,6 +455,8 @@ __all__ = [
     "build_headers",
     "redact",
     "build_complete_payload",
+    "build_transcribe_payload",
     "inject_mind",
     "parse_function_calls",
+    "parse_transcript",
 ]

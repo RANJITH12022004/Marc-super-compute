@@ -60,6 +60,8 @@ __all__ = [
     "is_sandbox",
     "has_token",
     "has_wa_token",
+    "has_ig_token",
+    "ig_is_live",
     "send_whatsapp",
     "send_instagram",
     "verify_signature",
@@ -155,8 +157,13 @@ def has_wa_token() -> bool:
     return bool(_wa_token())
 
 
+def has_ig_token() -> bool:
+    """True when an Instagram Graph bearer token is configured (or WA fallback)."""
+    return bool(_ig_token())
+
+
 def get_mode() -> str:
-    """Return ``"live"`` or ``"sandbox"``.
+    """Return ``"live"`` or ``"sandbox"`` for WhatsApp Cloud.
 
     ``"sandbox"`` when ``MARC_MODE`` is not ``live`` or when
     ``META_WA_ACCESS_TOKEN`` is empty. ``"live"`` only when both are set.
@@ -166,6 +173,11 @@ def get_mode() -> str:
     if not _wa_token():
         return "sandbox"
     return "live"
+
+
+def ig_is_live() -> bool:
+    """Instagram live send: MARC_MODE=live AND IG token (does not require WA)."""
+    return _mode_flag() == "live" and bool(_ig_token())
 
 
 def is_sandbox(mode: str | None = None) -> bool:
@@ -395,7 +407,7 @@ def send_instagram(to: str = "", body: str = "", **kwargs) -> dict:
     ``@alex.fake.stranger``.
     """
     dest, text = _coerce_to_body(to, body, **kwargs)
-    if get_mode() != "live" or not _wa_token():
+    if not ig_is_live():
         draft = _enqueue_business(
             "instagram", dest, text,
             {"tool": "send_instagram", "to": dest, "sandbox": True})

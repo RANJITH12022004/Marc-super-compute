@@ -24,6 +24,18 @@ _SECRET_RES = (
     re.compile(r"api[\s_\-]*keys?", re.IGNORECASE),
 )
 
+_FAILED_KEYS = (
+    "failed_text",
+    "failed_lines",
+    "failed",
+    "FAILED",
+    "FAILED.md",
+    "failed.md",
+    "failed_md",
+    "failed_list",
+    "faileds",
+)
+
 
 def _str(v):
     if v is None:
@@ -241,9 +253,38 @@ def note(title=None, body=None, *args, **kwargs):
     return {"title": _clean_title(title), "body": _clean_body(body)}
 
 
+def _failed_to_text(v):
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        parts = []
+        for item in v:
+            s = _str(item)
+            if s:
+                parts.append(s)
+        return "\n".join(parts)
+    return _str(v)
+
+
+def _last_n_lines(text, n=5):
+    s = _str(text)
+    if not s.strip():
+        return ""
+    lines = s.splitlines()
+    tail = lines[-n:] if len(lines) > n else lines
+    cleaned = _drop_secret_lines("\n".join(tail)).strip()
+    if not cleaned:
+        return ""
+    clines = cleaned.splitlines()
+    if len(clines) > n:
+        clines = clines[-n:]
+    return "\n".join(clines).strip()
+
+
 def inject_context(me_text=None, now_text=None, cache=None,
+                   failed_text=None, failed_lines=None,
                    *args, **kwargs):
-    """Clamped ME+NOW concatenated, total <=800 chars, no secrets."""
+    """Clamped ME+NOW(+FAILED last 5) concatenated, total <=800, no secrets."""
     if cache is None:
         for a in args:
             if isinstance(a, dict):
@@ -255,11 +296,32 @@ def inject_context(me_text=None, now_text=None, cache=None,
     for k in ("now", "NOW", "now_text"):
         if now_text is None and k in kwargs and kwargs[k] is not None:
             now_text = kwargs[k]
+    if failed_text is None:
+        for k in ("failed_text", "failed", "FAILED",
+                  "FAILED.md", "failed.md", "failed_md"):
+            if k in kwargs and kwargs[k] is not None:
+                failed_text = kwargs[k]
+                break
+    if failed_lines is None:
+        for k in ("failed_lines", "failed_list", "faileds"):
+            if k in kwargs and kwargs[k] is not None:
+                failed_lines = kwargs[k]
+                break
     if cache is None:
         for k in ("cache", "store", "memory"):
             if k in kwargs and kwargs[k] is not None:
                 cache = kwargs[k]
                 break
+    extra_failed_bits = []
+    for a in args:
+        if isinstance(a, dict):
+            continue
+        if isinstance(a, (list, tuple)):
+            extra_failed_bits.append(_failed_to_text(a))
+        elif isinstance(a, str) and a.strip():
+            if isinstance(cache, str) and a == cache:
+                continue
+            extra_failed_bits.append(a)
     me_raw = _str(me_text)
     now_raw = _str(now_text)
     if not me_raw.strip() and isinstance(cache, dict):
@@ -273,8 +335,31 @@ def inject_context(me_text=None, now_text=None, cache=None,
     if not me_raw.strip() and not now_raw.strip():
         if isinstance(cache, str) and cache.strip():
             me_raw = cache
+    failed_raw = ""
+    ft = _failed_to_text(failed_text)
+    fl = _failed_to_text(failed_lines)
+    if ft.strip():
+        failed_raw = ft
+    if fl.strip():
+        failed_raw = (failed_raw + "\n" + fl).strip() if failed_raw.strip() else fl
+    for bit in extra_failed_bits:
+        if _str(bit).strip():
+            failed_raw = (failed_raw + "\n" + _str(bit)).strip() \
+                if failed_raw.strip() else _str(bit)
+    if not failed_raw.strip() and isinstance(cache, dict):
+        fb3 = _cache_get(cache, list(_FAILED_KEYS))
+        if fb3.strip():
+            failed_raw = fb3
+    if not failed_raw.strip():
+        for k in _FAILED_KEYS:
+            if k in kwargs and kwargs[k] is not None:
+                cand = _failed_to_text(kwargs[k])
+                if cand.strip():
+                    failed_raw = cand
+                    break
     me_part = _drop_secret_lines(me_raw).strip()
     now_part = _drop_secret_lines(now_raw).strip()
+    failed_part = _last_n_lines(failed_raw, 5)
     me_part = me_part[:_ME_LIMIT] if len(me_part) > _ME_LIMIT else me_part
     now_part = now_part[:_NOW_LIMIT] if len(now_part) > _NOW_LIMIT else now_part
     if me_part and now_part:
@@ -284,6 +369,13 @@ def inject_context(me_text=None, now_text=None, cache=None,
     elif now_part:
         out = "NOW:\n" + now_part
     else:
+        out = ""
+    if failed_part:
+        if out:
+            out = out + "\nFAILED:\n" + failed_part
+        else:
+            out = "FAILED:\n" + failed_part
+    if not out:
         return ""
     if len(out) > _CONTEXT_LIMIT:
         out = out[:_CONTEXT_LIMIT].rstrip()

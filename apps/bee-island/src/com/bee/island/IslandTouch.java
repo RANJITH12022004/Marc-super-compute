@@ -18,11 +18,23 @@ public final class IslandTouch {
     /** Fixed visual pill origin Y (dp). Never change. */
     public static final float CAMERA_Y = 68.6f;
 
+    /** Compact idle pill width (dp). */
+    public static final float IDLE_W_DP = 126f;
+
+    /** Listening morph pill width (dp). */
+    public static final float LISTEN_W_DP = 168f;
+
     /** Touch slop expansion applied on each side (dp). */
     public static final int HIT_SLOP_DP = 24;
 
     /** Listening tap debounce window (ms). */
     public static final int LISTEN_TIMEOUT_MS = 8000;
+
+    /** Hold-to-open threshold (ms). */
+    public static final int HOLD_MS = 2000;
+
+    /** Tap ignore window after listen starts (ms). */
+    public static final int TAP_IGNORE_MS = 300;
 
     private IslandTouch() {
     }
@@ -47,7 +59,7 @@ public final class IslandTouch {
      * never includes "not_touchable" (any casing).
      *
      * @param screenOn true to keep screen on, false otherwise
-     * @return unmodifiable set of flag tokens; always contains "touchable"
+     * @return unmodifiable set of flag tokens; always contains "touchable" and "show_when_locked"
      */
     public static Set<String> windowFlags(boolean screenOn) {
         Set<String> flags = new LinkedHashSet<String>();
@@ -55,6 +67,7 @@ public final class IslandTouch {
         flags.add("not_focusable");
         flags.add("layout_in_screen");
         flags.add("watch_outside_touch");
+        flags.add("show_when_locked");
         if (screenOn) {
             flags.add("keep_screen_on");
         }
@@ -99,8 +112,8 @@ public final class IslandTouch {
      *
      * <ul>
      *   <li>if confirming return "cancel"</li>
-     *   <li>else if listening and age &lt; 8000 return "ignore"</li>
-     *   <li>else if listening and age &gt;= 8000 return "restart_listen"</li>
+     *   <li>else if listening and age &lt; TAP_IGNORE_MS return "ignore"</li>
+     *   <li>else if listening and age &gt;= TAP_IGNORE_MS return "restart_listen"</li>
      *   <li>else return "start_listen"</li>
      * </ul>
      */
@@ -109,7 +122,7 @@ public final class IslandTouch {
             return "cancel";
         }
         if (listening) {
-            if (listeningAgeMs < (long) LISTEN_TIMEOUT_MS) {
+            if (listeningAgeMs < (long) TAP_IGNORE_MS) {
                 return "ignore";
             }
             return "restart_listen";
@@ -125,6 +138,21 @@ public final class IslandTouch {
     /** No-age overload defaults age to 0. */
     public static String onTap(boolean listening, boolean confirming) {
         return onTap(listening, confirming, 0L);
+    }
+
+    /**
+     * Hold dispatch.
+     *
+     * <ul>
+     *   <li>if confirming return "cancel"</li>
+     *   <li>else return "open_app"</li>
+     * </ul>
+     */
+    public static String onHold(boolean listening, boolean confirming) {
+        if (confirming) {
+            return "cancel";
+        }
+        return "open_app";
     }
 
     /**
@@ -173,5 +201,26 @@ public final class IslandTouch {
         m.put("width", Float.valueOf(width));
         m.put("height", Float.valueOf(height));
         return Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * Punch-hole window layout. Visual center stays on the camera even when
+     * the window clamps to the screen top (never Gravity-center the visual).
+     *
+     * @return float array {winX, winY, winW, winH, visualLeft, visualTop, centerX, centerY}
+     */
+    public static float[] pillWindow(float cameraX, float cameraY, float visualW, float visualH, float slopPx) {
+        float halfW = visualW / 2f;
+        float halfH = visualH / 2f;
+        float winX = Math.max(0f, cameraX - halfW - slopPx);
+        float above = cameraY - halfH;
+        float winY = (above >= slopPx) ? (cameraY - halfH - slopPx) : 0f;
+        float visualLeft = cameraX - winX - halfW;
+        float visualTop = cameraY - winY - halfH;
+        float winW = visualLeft + visualW + slopPx;
+        float winH = visualTop + visualH + slopPx;
+        float centerX = cameraX;
+        float centerY = cameraY;
+        return new float[]{winX, winY, winW, winH, visualLeft, visualTop, centerX, centerY};
     }
 }

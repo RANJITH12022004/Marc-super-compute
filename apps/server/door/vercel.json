@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "node -e \"console.log('marc-door')\"",
+  "installCommand": "echo skip",
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/v1/:path*", "destination": "https://rox.tail9a2eac.ts.net/v1/:path*" },
+    { "source": "/api/v1/:path*", "destination": "https://rox.tail9a2eac.ts.net/v1/:path*" }
+  ],
+  "functions": {
+    "api/v1/utterance.js": { "maxDuration": 60 },
+    "api/v1/pull.js": { "maxDuration": 30 },
+    "api/v1/result.js": { "maxDuration": 10 },
+    "api/v1/health.js": { "maxDuration": 10 },
+    "api/v1/webhooks_meta.js": { "maxDuration": 30 },
+    "api/v1/whoami.js": { "maxDuration": 30 },
+    "api/v1/mind.js": { "maxDuration": 30 },
+    "api/v1/note.js": { "maxDuration": 30 }
+  }
+}

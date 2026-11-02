@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import unittest
 from pathlib import Path
 
@@ -77,6 +78,81 @@ def test_activity_home_no_status_rings():
     assert "id/status_ring" not in text, "activity_home.xml must not contain status_ring"
 
 
+def _view_block(text: str, view_id: str) -> str:
+    """Return the XML element string that declares @+id/<view_id>."""
+    pattern = re.compile(
+        r"<(?:Button|TextView|EditText|View|LinearLayout|FrameLayout)[^>]*@\+id/"
+        + re.escape(view_id)
+        + r'"[^>]*?(?:/>|>.*?</(?:Button|TextView|EditText|View|LinearLayout|FrameLayout)>)',
+        re.DOTALL,
+    )
+    m = pattern.search(text)
+    assert m, f"activity_home.xml missing id/{view_id}"
+    return m.group(0)
+
+
+def test_activity_home_honey_black_nav():
+    """Honey-black nav: black ink (bee_nav_ink or #000000) near nav_island."""
+    assert ACTIVITY_HOME.is_file(), f"missing {ACTIVITY_HOME}"
+    text = ACTIVITY_HOME.read_text(encoding="utf-8")
+    assert "nav_island" in text, "activity_home.xml missing nav_island"
+    try:
+        block = _view_block(text, "nav_island")
+    except AssertionError:
+        block = ""
+    # Direct block check first (strict: ink on the nav button itself).
+    block_low = block.lower()
+    block_has_ink = ("bee_nav_ink" in block) or ("#000000" in block_low)
+    if block_has_ink:
+        return
+    # Fallback: allow ink declared near nav_island (parent bar / adjacent nav).
+    idx = text.find("nav_island")
+    window = text[max(0, idx - 2000) : idx + 2000]
+    window_low = window.lower()
+    assert ("bee_nav_ink" in window) or ("#000000" in window_low), (
+        "activity_home.xml must contain bee_nav_ink or #000000 near nav_island"
+    )
+
+
+def test_activity_home_nav_not_honey_on_honey():
+    """nav_island must not set both backgroundTint honey AND textColor honey."""
+    assert ACTIVITY_HOME.is_file(), f"missing {ACTIVITY_HOME}"
+    text = ACTIVITY_HOME.read_text(encoding="utf-8")
+    block = _view_block(text, "nav_island")
+    low = block.lower()
+    has_bg_honey = bool(
+        re.search(r"backgroundtint\s*=\s*\"[^\"]*honey[^\"]*\"", low)
+    )
+    has_text_honey = bool(
+        re.search(r"textcolor\s*=\s*\"[^\"]*honey[^\"]*\"", low)
+    )
+    assert not (has_bg_honey and has_text_honey), (
+        "nav_island must not set both backgroundTint honey AND textColor honey"
+    )
+
+
+def test_activity_home_island_spoken_state():
+    """Island spoken/state views must exist."""
+    assert ACTIVITY_HOME.is_file(), f"missing {ACTIVITY_HOME}"
+    text = ACTIVITY_HOME.read_text(encoding="utf-8")
+    assert "island_spoken" in text, "activity_home.xml missing island_spoken"
+    assert "island_state" in text, "activity_home.xml missing island_state"
+
+
+def test_activity_home_confirm_actions():
+    """confirm_yes must say Send and confirm_cancel must say Cancel."""
+    assert ACTIVITY_HOME.is_file(), f"missing {ACTIVITY_HOME}"
+    text = ACTIVITY_HOME.read_text(encoding="utf-8")
+    yes_block = _view_block(text, "confirm_yes")
+    assert "Send" in yes_block, "confirm_yes must say Send"
+    assert 'android:text="Send"' in yes_block, 'confirm_yes must set android:text="Send"'
+    cancel_block = _view_block(text, "confirm_cancel")
+    assert "Cancel" in cancel_block, "confirm_cancel must say Cancel"
+    assert 'android:text="Cancel"' in cancel_block, (
+        'confirm_cancel must set android:text="Cancel"'
+    )
+
+
 def test_themes_xml():
     assert THEMES.is_file(), f"missing {THEMES}"
     text = THEMES.read_text(encoding="utf-8")
@@ -104,6 +180,18 @@ class B3UiTests(unittest.TestCase):
 
     def test_activity_home_no_status_rings(self):
         test_activity_home_no_status_rings()
+
+    def test_activity_home_honey_black_nav(self):
+        test_activity_home_honey_black_nav()
+
+    def test_activity_home_nav_not_honey_on_honey(self):
+        test_activity_home_nav_not_honey_on_honey()
+
+    def test_activity_home_island_spoken_state(self):
+        test_activity_home_island_spoken_state()
+
+    def test_activity_home_confirm_actions(self):
+        test_activity_home_confirm_actions()
 
     def test_themes_xml(self):
         test_themes_xml()

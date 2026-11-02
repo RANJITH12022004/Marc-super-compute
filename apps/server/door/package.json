@@ -1,0 +1,11 @@
+{
+  "name": "marc-door",
+  "private": true,
+  "description": "HTTPS mailbox. No model, no chat history, no audio.",
+  "scripts": {
+    "vercel-build": "node -e \"console.log('marc-door')\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

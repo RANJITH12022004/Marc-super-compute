@@ -51,6 +51,10 @@ class C0CapsuleTests(unittest.TestCase):
         self.assertIn("roundIcon", text)
         self.assertTrue((ROOT / "res" / "mipmap-anydpi-v26" / "ic_launcher.xml").is_file())
 
+    def test_service_uses_pill_window(self):
+        src = SERVICE.read_text(encoding="utf-8")
+        self.assertIn("pillWindow", src)
+
 
 if __name__ == "__main__":
     unittest.main()

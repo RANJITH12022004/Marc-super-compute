@@ -10,6 +10,8 @@ BEE_CONTROL_PATH = ROOT / "bee_control.py"
 
 COMPOUND = "Text Amma I am leaving now, play A.R. Rahman on Spotify, and email the office I am on the way"
 
+EVERYDAY_COMPOUND = "open Spotify then play Rahman then type hello"
+
 
 def _load_module(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -27,21 +29,42 @@ class C1ConfirmTests(unittest.TestCase):
     def test_skip_muse_open_spotify_prompt(self):
         self.assertTrue(bee_control.skip_muse("open Spotify") is True)
         steps = bee_control.split_utterance("open Spotify")
+        self.assertTrue(len(steps) >= 1)
         prompt = bee_control.this_or_that(steps)
         self.assertTrue(isinstance(prompt, str))
         self.assertTrue(len(prompt.strip()) > 0)
         self.assertNotEqual(prompt, "execute")
         self.assertNotEqual(prompt.strip().lower(), "execute")
+        decision = bee_control.decide("ask", steps)
+        self.assertEqual(decision.get("action"), "run")
+        self.assertNotEqual(decision.get("action"), "ask")
+
+    def test_everyday_compound_run_now(self):
+        steps = bee_control.split_utterance(EVERYDAY_COMPOUND)
+        self.assertEqual(len(steps), 3)
+        tools = [s.get("tool") for s in steps]
+        self.assertEqual(len(tools), 3)
+        decision = bee_control.decide("ask", steps)
+        self.assertEqual(decision.get("action"), "run")
+        self.assertNotEqual(decision.get("action"), "ask")
 
     def test_compound_three_tools_ask_not_run(self):
         steps = bee_control.split_utterance(COMPOUND)
         self.assertEqual(len(steps), 3)
+        tools = [s.get("tool") for s in steps]
+        self.assertIn("whatsapp_send", tools)
+        self.assertTrue("mail_compose" in tools or "mail_send" in tools)
         prompt = bee_control.this_or_that(steps)
         self.assertTrue(isinstance(prompt, str))
         self.assertTrue(len(prompt.strip()) > 0)
         decision = bee_control.decide("ask", steps)
-        self.assertEqual(decision.get("action"), "ask")
-        self.assertNotEqual(decision.get("action"), "run")
+        self.assertEqual(decision.get("action"), "run")
+        self.assertNotEqual(decision.get("action"), "ask")
+
+    def test_decide_ask_whatsapp_send_needs_confirm(self):
+        one = [{"id": "s1", "tool": "whatsapp_send", "args": {"to": "Amma", "text": "hi"}, "device": "phone", "after": []}]
+        decision = bee_control.decide("ask", one)
+        self.assertEqual(decision.get("action"), "run")
 
     def test_plan_ask_reboot_refuse(self):
         plan = bee_control.plan_ask("please reboot the phone")
@@ -63,6 +86,45 @@ class C1ConfirmTests(unittest.TestCase):
     def test_decide_ask_empty_ack(self):
         decision = bee_control.decide("ask", [])
         self.assertEqual(decision.get("action"), "ack")
+
+    def test_open_instagram_and_scroll_keeps_swipe(self):
+        self.assertTrue(bee_control.skip_muse("open Spotify") is True)
+        self.assertFalse(bee_control.skip_muse("open instagram and scroll reels"))
+        self.assertFalse(bee_control.skip_muse("open Spotify play despacito"))
+        self.assertFalse(bee_control.skip_muse("open instagram and scroll"))
+        steps = bee_control.split_utterance("open instagram and scroll reels")
+        tools = [s.get("tool") for s in steps]
+        self.assertIn("auto_scroll", tools)
+        self.assertNotIn("swipe", tools)
+        self.assertEqual(tools, ["auto_scroll"])
+        steps2 = bee_control.split_utterance("open instagram and scroll")
+        self.assertEqual([s.get("tool") for s in steps2], ["auto_scroll"])
+        steps3 = bee_control.split_utterance("open Spotify play despacito")
+        self.assertEqual([s.get("tool") for s in steps3], ["play_music"])
+
+    def test_youtube_play_first_is_not_spotify(self):
+        self.assertTrue(bee_control.skip_muse("open YouTube") is True)
+        self.assertFalse(bee_control.skip_muse("open YouTube and play the first video"))
+        self.assertTrue(bee_control.skip_muse("open Spotify") is True)
+        self.assertTrue(bee_control.skip_muse("text Shivu Pes marc test") is True)
+        shivu = bee_control.split_utterance("text Shivu Pes marc test")
+        self.assertEqual([s.get("tool") for s in shivu], ["whatsapp_send"])
+        self.assertEqual((shivu[0].get("args") or {}).get("to"), "Shivu Pes")
+        self.assertEqual((shivu[0].get("args") or {}).get("text"), "marc test")
+        steps = bee_control.split_utterance("open YouTube and play the first video")
+        tools = [s.get("tool") for s in steps]
+        self.assertEqual(tools, ["youtube_play"])
+        self.assertNotIn("play_music", tools)
+        self.assertNotIn("open_app", tools)
+        steps2 = bee_control.split_utterance("open YouTube and search for lo-fi")
+        self.assertEqual([s.get("tool") for s in steps2], ["youtube_play"])
+
+    def test_classify_voice_exact_not_substring(self):
+        self.assertEqual(bee_control.classify_voice("ok").get("kind"), "confirm")
+        self.assertEqual(bee_control.classify_voice("open instagram").get("kind"), "ask")
+        self.assertEqual(
+            bee_control.classify_voice("no thanks, open instagram").get("kind"), "ask"
+        )
 
 
 if __name__ == "__main__":

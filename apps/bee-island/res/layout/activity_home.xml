@@ -45,17 +45,38 @@
             android:padding="8dp">
 
             <TextView
-                android:id="@+id/island_preview"
+                android:id="@+id/island_title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="bee listening..." />
+                android:text="bee"
+                android:textSize="28sp"
+                android:textColor="@color/bee_ink"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/island_spoken"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="bee listening..."
+                android:textSize="17sp"
+                android:textColor="@color/bee_ink" />
+
+            <TextView
+                android:id="@+id/island_state"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Listening"
+                android:textSize="13sp"
+                android:textColor="@color/bee_ink" />
 
             <Button
                 android:id="@+id/listen_button"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:minHeight="44dp"
-                android:text="Listen" />
+                android:text="Listen"
+                android:textColor="@color/bee_ink"
+                android:backgroundTint="@color/bee_surface" />
 
         </LinearLayout>
 
@@ -85,23 +106,24 @@
                 android:id="@+id/confirm_row"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                android:orientation="horizontal"
+                android:visibility="gone">
 
                 <Button
                     android:id="@+id/confirm_yes"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:minHeight="44dp"
-                    android:text="this"
-                    android:contentDescription="this" />
+                    android:text="Send"
+                    android:contentDescription="Send" />
 
                 <Button
                     android:id="@+id/confirm_cancel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:minHeight="44dp"
-                    android:text="that"
-                    android:contentDescription="that" />
+                    android:text="Cancel"
+                    android:contentDescription="Cancel" />
 
             </LinearLayout>
 
@@ -271,7 +293,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minHeight="44dp"
             android:backgroundTint="@color/bee_honey"
+            android:textColor="@color/bee_nav_ink"
             android:text="Island" />
 
         <Button
@@ -279,6 +303,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minHeight="44dp"
+            android:backgroundTint="@color/bee_surface"
+            android:textColor="@color/bee_ink"
             android:text="Chat" />
 
         <Button
@@ -286,6 +313,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minHeight="44dp"
+            android:backgroundTint="@color/bee_surface"
+            android:textColor="@color/bee_ink"
             android:text="Setup" />
 
     </LinearLayout>

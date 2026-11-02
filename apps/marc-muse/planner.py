@@ -17,19 +17,15 @@ import os
 import re
 
 CONFIRM_DEFAULT = (
-    "mail_send,mail_compose,whatsapp_send,instagram_send,"
-    "sms_send,calendar_create,dial,open_food_search"
+    "instagram_send,sms_send,calendar_create,open_food_search"
 )
 
 # Tools that send externally (subset of CONFIRM_TOOLS that become drafts).
+# WhatsApp, mail, and dial run immediately on the phone — no Yes, no draft.
 SEND_TOOLS = {
-    "mail_send",
-    "mail_compose",
-    "whatsapp_send",
     "instagram_send",
     "sms_send",
     "calendar_create",
-    "dial",
 }
 
 _STOPPED = False
@@ -208,6 +204,18 @@ def _clause_to_tool(clause):
         q = found.group(1).strip() if found else c
         return "google_search", {"query": q}
 
+    if "youtube" in low or "youtu" in low:
+        if re.search(r"\bfirst\b", low) and re.search(r"\b(play|video)\b", low):
+            return "youtube_play", {"mode": "first"}
+        m_yt = re.search(r"\bsearch\s+(?:for\s+)?(.+)$", c, re.I)
+        if m_yt:
+            return "youtube_play", {"mode": "search", "query": m_yt.group(1).strip()}
+        m_play = re.search(r"\bplay\s+(.+)$", c, re.I)
+        if m_play and "first" in m_play.group(1).lower():
+            return "youtube_play", {"mode": "first"}
+        if m_play:
+            return "youtube_play", {"mode": "search", "query": m_play.group(1).strip()}
+
     if re.search(r"\b(play|spotify|music)\b", low):
         q = re.sub(r"^(play|on spotify|spotify)\s+", "", c, flags=re.I).strip()
         q = re.sub(r"\bon spotify\s*$", "", q, flags=re.I).strip()
@@ -234,11 +242,12 @@ def _clause_to_tool(clause):
         m2 = re.search(r"(?:to\s+)([\w.@ ]+?)(?:\s+(?:saying|that|subject|about)\s+(.+))?$", c, re.I)
         to = m2.group(1).strip() if m2 else ""
         body = m2.group(2).strip() if (m2 and m2.group(2)) else c
-        tool = "mail_send" if re.search(r"\bsend\b", low) else "mail_compose"
-        return tool, {"to": to, "subject": "", "text": body}
+        return "mail_send", {"to": to, "subject": "", "text": body}
     if re.search(r"\b(sms|text (him|her|them|message))\b", low):
         return "sms_send", {"to": "", "text": c}
-    if re.search(r"\b(instagram|insta|dm)\b", low):
+    if re.search(r"\b(instagram|insta|dm)\b", low) and re.search(
+        r"\b(send|dm|message)\b", low
+    ):
         return "instagram_send", {"to": "", "text": c}
     if re.search(r"\b(calendar|invite|schedule|meeting)\b", low) and re.search(
         r"\b(create|invite|schedule|add|book)\b", low
@@ -246,7 +255,7 @@ def _clause_to_tool(clause):
         return "calendar_create", {"title": c}
     if re.match(r"^(call|dial)\b", low):
         who = re.sub(r"^(call|dial)\s+", "", c, flags=re.I).strip()
-        return "dial", {"contact": who}
+        return "dial", {"to": who, "contact": who}
     if re.search(r"\b(swiggy|zomato|order food|food)\b", low):
         q = re.sub(r"^(search|order|find)\s+", "", c, flags=re.I).strip()
         return "open_food_search", {"query": q}
@@ -263,16 +272,56 @@ def _clause_to_tool(clause):
     if m:
         return "mind_note", {"text": "forget: " + m.group(1).strip()}
 
+    m = re.match(r"^(?:use|switch(?:\s+to)?)\s+project\s+(\S+)$", c, re.I)
+    if m:
+        return "project_use", {"slug": m.group(1).strip()}
+    if re.match(r"^list\s+projects$", low):
+        return "project_list", {}
+    m = re.match(r"^(?:run\s+project|code this)\s*(.*)$", c, re.I)
+    if m:
+        return "project_run", {"goal": (m.group(1) or c).strip()}
+    if re.match(r"^stop\s+project$", low):
+        return "project_stop", {}
+
     m = re.match(r"^(open|launch|close)\s+(.+)$", c, re.I)
     if m:
         verb, label = m.group(1).lower(), m.group(2).strip()
         label = re.sub(r"\s+(app|application)\s*$", "", label, flags=re.I).strip()
+        play = re.match(r"^spotify\s+(?:and\s+)?play\s+(.+)$", label, re.I)
+        if play:
+            return "play_music", {"query": play.group(1).strip()}
+        if re.search(r"\bspotify\b", label, re.I) and re.search(r"\bplay\b", label, re.I):
+            mp = re.search(r"play\s+(.+)$", label, re.I)
+            q = (mp.group(1) or "").strip() if mp else label.strip()
+            if q:
+                return "play_music", {"query": q}
+        if re.search(r"\b(instagram|insta)\b", label, re.I) and re.search(
+            r"\b(scroll|reel|auto\s*scroll)\b", label, re.I
+        ):
+            return "auto_scroll", {"direction": "up"}
         ms = re.search(r"^(.+?)\s+and search for\s+(.+)$", label, re.I)
         if ms:
-            return "open_app", {"label": ms.group(1).strip()}
+            name = ms.group(1).strip()
+            return "open_app", {"app": name, "label": name}
         tool = "open_app" if verb in ("open", "launch") else "close_app"
-        return tool, {"label": label}
+        return tool, {"app": label, "label": label}
 
+    m = re.match(r"^(?:auto\s*scroll|scroll|swipe)\b(.*)$", c, re.I)
+    if m:
+        rest = (m.group(1) or "").lower()
+        if "reel" in rest or "auto" in low:
+            return "auto_scroll", {"direction": "up"}
+        direction = "up"
+        if "down" in rest:
+            direction = "down"
+        elif "left" in rest:
+            direction = "left"
+        elif "right" in rest:
+            direction = "right"
+        return "swipe", {"direction": direction}
+    m = re.match(r"^(?:tap|click)\b\s*(.*)$", c, re.I)
+    if m:
+        return "click_text", {"text": (m.group(1) or "").strip()}
     m = re.match(r"^type\s+(.+)$", c, re.I)
     if m:
         body = m.group(1).strip()
@@ -285,7 +334,7 @@ def _clause_to_tool(clause):
     if re.search(r"^https?://", c.strip()):
         return "open_url", {"url": c.strip()}
 
-    return "type_into", {"text": c}
+    return None, {}
 
 
 def _kind_for(clause, full_text, tool):
@@ -320,6 +369,12 @@ def _local_plan(text, session_id, target):
             "mail_compose",
             "dial",
             "open_app",
+            "auto_scroll",
+            "youtube_play",
+            "youtube_search",
+            "notifications_list",
+            "suggest_reply",
+            "chat_touch",
         }:
             return rp
     except Exception:
@@ -333,11 +388,14 @@ def _local_plan(text, session_id, target):
     plan = []
     prev_id = None
     for i, clause in enumerate(clauses):
-        tool, args = _clause_to_tool(clause)
+        mapped = _clause_to_tool(clause)
+        if not mapped or mapped[0] is None:
+            continue
+        tool, args = mapped[0], mapped[1]
         device = _resolve_device(clause, target)
         kind = _kind_for(clause, text, tool)
-        sid = "s%d" % (i + 1)
-        after = [] if i == 0 else [prev_id]
+        sid = "s%d" % (len(plan) + 1)
+        after = [] if prev_id is None else [prev_id]
         args = dict(args or {})
         confirm = tool in confirm_tools
         if mode == "sandbox" and (tool in confirm_tools or tool in SEND_TOOLS):
@@ -376,14 +434,29 @@ def _short_reply(plan, text):
     first = plan[0]
     tool = first.get("tool", "")
     args = first.get("args") or {}
-    if tool == "open_app" and args.get("label"):
-        base = "Opening %s." % args["label"]
+    if tool == "whatsapp_send":
+        base = "Texting %s." % (args.get("to") or "them")
+    elif tool == "notifications_list":
+        base = "Checking notifications."
+    elif tool == "suggest_reply":
+        base = "Drafting a reply."
+    elif tool == "chat_touch":
+        base = "Drafting a message to %s." % (args.get("to") or "them")
+    elif tool == "dial":
+        base = "Calling %s." % (args.get("to") or args.get("contact") or "them")
+    elif tool in ("mail_send", "mail_compose"):
+        base = "Emailing %s." % (args.get("to") or "them")
+    elif tool == "open_app" and (args.get("app") or args.get("label")):
+        base = "Opening %s." % (args.get("app") or args.get("label"))
     elif tool == "youtube_search":
         base = "Searching YouTube."
     elif tool == "google_search":
         base = "Searching Google."
     elif tool == "play_music":
-        base = "Playing it."
+        q = args.get("query") or "it"
+        base = "Playing %s." % q
+    elif tool == "auto_scroll":
+        base = "Scrolling Reels."
     elif tool == "server_status":
         base = "Checking the server."
     elif tool == "type_into":
@@ -942,6 +1015,21 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
 
     # Serializable context for spark (never pass live objects with methods).
     spark_ctx = raw_context
+    try:
+        from brain import vault as _vault
+        from brain import recall as _recall
+
+        failed = _vault.last_failed(5)
+        me = _vault.who_am_i()
+        now = _vault.what_was_i_doing()
+        injected = _recall.inject_context(me, now, failed)
+        if injected:
+            if isinstance(spark_ctx, str) and spark_ctx.strip():
+                spark_ctx = injected + "\n" + spark_ctx
+            elif spark_ctx is None or spark_ctx == "":
+                spark_ctx = injected
+    except Exception:
+        pass
     if spark_ctx is not None and not isinstance(spark_ctx, (dict, str, list, int, float, bool)):
         try:
             _cval = getattr(spark_ctx, "context", None)

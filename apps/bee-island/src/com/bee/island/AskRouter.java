@@ -3,21 +3,33 @@ package com.bee.island;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.speech.tts.TextToSpeech;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
  * Same ask() DAG for island tap, Chat composer, and ACTION_ASK.
- * Confirm-before-act: tools NEVER auto-run. runAsk only stages a
- * PendingPlan and speaks the this-or-that prompt; finish() runs
- * only from an explicit confirm with pending steps.
- * Phone tools run on device; laptop/server go to Rox or "laptop offline".
+ * Everyday open/play/type/search run immediately. Confirm-gated
+ * send tools (PRD CONFIRM_TOOLS) stage a PendingPlan. Leftovers
+ * go to Rox POST /utterance with session_id=phone.
  */
 final class AskRouter {
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static volatile String lastSpoken = "";
+    private static volatile String lastAsk = "";
+    private static volatile boolean recovering;
+    private static TextToSpeech tts;
+    private static boolean ttsReady;
+
     private AskRouter() {
+    }
+
+    static String lastSpoken() {
+        return lastSpoken == null ? "" : lastSpoken;
     }
 
     static void handle(final Context context, final String raw) {
@@ -25,6 +37,7 @@ final class AskRouter {
             return;
         }
         final String text = raw.trim();
+        lastAsk = text;
         ChatStore.add(context, true, text);
         String kind = BeeAsk.classifyVoice(text);
         if ("refuse".equals(kind)) {
@@ -33,6 +46,7 @@ final class AskRouter {
         }
         if ("cancel".equals(kind)) {
             PendingPlan.clear();
+            IslandService.stopAutoScroll();
             speak(context, "Cancelled.");
             return;
         }
@@ -47,7 +61,7 @@ final class AskRouter {
                     }
                 }, "bee-run").start();
             } else {
-                speak(context, BeeAsk.clampLine("Got you \u2014 didn\u2019t catch an action."));
+                speak(context, BeeAsk.clampLine("Nothing to confirm."));
             }
             return;
         }
@@ -58,6 +72,10 @@ final class AskRouter {
                     BeeMind.handle(context, text);
                 }
             }, "bee-mind").start();
+            return;
+        }
+        if (BeeAsk.isGreeting(text)) {
+            speak(context, "Hi.");
             return;
         }
         new Thread(new Runnable() {
@@ -71,59 +89,107 @@ final class AskRouter {
     static void runAsk(Context context, String text) {
         Map<String, Object> plan = BeeAsk.planAsk(text);
         String kind = String.valueOf(plan.get("kind"));
-        @SuppressWarnings("unchecked")
         List<Map<String, Object>> steps = castSteps(plan.get("steps"));
         if ("refuse".equals(kind)) {
             speak(context, "No.");
             return;
         }
+        boolean namedRemote = namedRemote(text, steps);
         if ("local_fast".equals(kind) || "dag".equals(kind)) {
-            if (steps.isEmpty()) {
-                speak(context, BeeAsk.clampLine("Got you \u2014 didn\u2019t catch an action."));
+            if (namedRemote) {
+                leftover(context, text, steps);
                 return;
             }
+            actOrConfirm(context, steps);
+            return;
+        }
+        leftover(context, text, steps);
+    }
+
+    static void leftover(Context context, String text, List<Map<String, Object>> localSteps) {
+        boolean namedRemote = namedRemote(text, localSteps);
+        String spoken = "";
+        if (RoxClient.reachable(context)) {
+            Map<String, Object> reply = RoxClient.postUtterance(context, text);
+            if (Boolean.TRUE.equals(reply.get("ok"))) {
+                List<Map<String, Object>> phoneSteps = castSteps(reply.get("phone_steps"));
+                spoken = reply.get("spoken") == null ? "" : String.valueOf(reply.get("spoken")).trim();
+                if (!phoneSteps.isEmpty()) {
+                    actOrConfirm(context, phoneSteps, spoken);
+                    return;
+                }
+            }
+        }
+        List<Map<String, Object>> phoneOnly = deviceSteps(localSteps, false);
+        List<Map<String, Object>> remoteOnly = deviceSteps(localSteps, true);
+        if (namedRemote || !remoteOnly.isEmpty()) {
+            if (phoneOnly.isEmpty()) {
+                speak(context, "laptop offline");
+                return;
+            }
+            speak(context, "laptop offline");
+        }
+        String key = KeyVault.loadKey(context);
+        if ((key == null || key.isEmpty()) && phoneOnly.isEmpty()) {
+            speak(context, "Add a Muse key in Setup.");
+            return;
+        }
+        List<Map<String, Object>> tools = sparkPhone(context, text);
+        if (tools.isEmpty()) {
+            tools = phoneOnly;
+        } else {
+            tools = deviceSteps(tools, false);
+        }
+        if (tools.isEmpty()) {
+            tools = BeeAsk.splitUtterance(text);
+            tools = deviceSteps(tools, false);
+        }
+        if (tools.isEmpty()) {
+            if (!spoken.isEmpty()) {
+                speak(context, spoken);
+                return;
+            }
+            speak(context, BeeAsk.clampSpeak("Didn't catch that."));
+            return;
+        }
+        String line = spoken;
+        if (line.isEmpty()) {
+            line = lastSpokenPlan(context, text);
+        }
+        actOrConfirm(context, tools, line);
+    }
+
+    static void actOrConfirm(Context context, List<Map<String, Object>> steps) {
+        actOrConfirm(context, steps, "");
+    }
+
+    static void actOrConfirm(Context context, List<Map<String, Object>> steps, String spoken) {
+        if (steps == null || steps.isEmpty()) {
+            speak(context, BeeAsk.clampSpeak("Didn't catch that."));
+            return;
+        }
+        if (BeeAsk.needsConfirm(steps)) {
             String prompt = BeeAsk.thisOrThat(steps);
             PendingPlan.set(steps, prompt);
             speak(context, prompt);
             return;
         }
-        if ("spark".equals(kind) || "wonder".equals(kind)) {
-            String key = KeyVault.loadKey(context);
-            if (key == null || key.isEmpty()) {
-                speak(context, "Add a Muse key in Setup.");
-                return;
-            }
-            String model = "wonder".equals(kind) ? KeyVault.wonder(context) : KeyVault.spark(context);
-            try {
-                String mind = BeeMind.injectContext(context);
-                String raw = MuseClient.complete(key, model, text, mind);
-                List<Map<String, Object>> tools = MuseClient.parseFunctionCalls(raw);
-                if (tools.isEmpty()) {
-                    tools = BeeAsk.splitUtterance(text);
-                }
-                if (tools.isEmpty()) {
-                    speak(context, BeeAsk.clampLine("Got you \u2014 didn\u2019t catch an action."));
-                    return;
-                }
-                String prompt = BeeAsk.thisOrThat(tools);
-                PendingPlan.set(tools, prompt);
-                speak(context, prompt);
-            } catch (Exception e) {
-                speak(context, "Failed.");
-            }
-            return;
-        }
-        // Confused / weak parse: ack only, never auto-run.
-        if (steps.isEmpty()) {
-            speak(context, BeeAsk.clampLine("Got you \u2014 didn\u2019t catch an action."));
-            return;
-        }
-        String prompt = BeeAsk.thisOrThat(steps);
-        PendingPlan.set(steps, prompt);
-        speak(context, prompt);
+        finish(context, steps, spoken);
     }
 
     static void finish(Context context, List<Map<String, Object>> steps) {
+        finish(context, steps, "");
+    }
+
+    static void finish(Context context, List<Map<String, Object>> steps, String spoken) {
+        String before = spoken == null ? "" : spoken.trim();
+        if (before.isEmpty()) {
+            before = spokenFor(steps);
+        }
+        // Notification tools speak only after reading the tray.
+        if (!before.isEmpty() && !isQuietTool(steps)) {
+            speak(context, before);
+        }
         final boolean laptopOk = RoxClient.reachable(context);
         List<Map<String, Object>> results = BeeAsk.dispatch(steps,
                 new BeeAsk.StepRunner() {
@@ -139,9 +205,11 @@ final class AskRouter {
                     }
                 },
                 laptopOk);
-        List<String> names = new ArrayList<String>();
         boolean anyOffline = false;
         boolean anyOk = false;
+        boolean clickFail = false;
+        String resultSpoken = "";
+        Map<String, Object> touchDraft = null;
         for (Map<String, Object> r : results) {
             if (r == null) {
                 continue;
@@ -149,33 +217,314 @@ final class AskRouter {
             if (Boolean.TRUE.equals(r.get("ok"))) {
                 anyOk = true;
             }
+            Object spokenObj = r.get("spoken");
+            if (spokenObj != null) {
+                String s = String.valueOf(spokenObj).trim();
+                if (!s.isEmpty()) {
+                    resultSpoken = s;
+                }
+            }
+            if (r.get("draft") != null && r.get("to") != null) {
+                touchDraft = r;
+            }
             Object err = r.get("error");
-            if (err != null && String.valueOf(err).toLowerCase(Locale.US).contains("laptop offline")) {
+            String errText = err == null ? "" : String.valueOf(err).toLowerCase(Locale.US);
+            if (errText.contains("laptop offline")) {
                 anyOffline = true;
             }
-            Object tool = r.get("tool");
-            if (tool != null) {
-                names.add(String.valueOf(tool));
+            if (errText.contains("click")) {
+                clickFail = true;
             }
         }
-        String line = BeeAsk.lineFor("wave", names);
+        if (touchDraft != null && isChatTouch(steps)) {
+            String draft = String.valueOf(touchDraft.get("draft")).trim();
+            String to = String.valueOf(touchDraft.get("to")).trim();
+            String pkg = touchDraft.get("package") == null
+                    ? "com.whatsapp.w4b" : String.valueOf(touchDraft.get("package"));
+            if (!draft.isEmpty() && !to.isEmpty()) {
+                List<Map<String, Object>> send = new ArrayList<Map<String, Object>>();
+                Map<String, Object> step = new HashMap<String, Object>();
+                step.put("tool", "whatsapp_send");
+                Map<String, Object> args = new HashMap<String, Object>();
+                args.put("to", to);
+                String body = draft;
+                String lowDraft = draft.toLowerCase(Locale.US);
+                int idx = lowDraft.indexOf("suggested reply:");
+                if (idx >= 0) {
+                    body = draft.substring(idx + "suggested reply:".length()).trim();
+                }
+                args.put("text", body);
+                args.put("package", pkg);
+                step.put("args", args);
+                step.put("device", "phone");
+                send.add(step);
+                String prompt = "Send to " + to + "?";
+                PendingPlan.set(send, prompt);
+                String line = resultSpoken;
+                if (line.isEmpty()) {
+                    line = "Suggested: " + body;
+                }
+                line = line + " Say confirm to send.";
+                speak(context, line);
+                return;
+            }
+        }
+        if (clickFail && !recovering) {
+            recovering = true;
+            try {
+                List<Map<String, Object>> retry = sparkPhone(context, lastAsk);
+                if (retry != null && !retry.isEmpty()) {
+                    finish(context, retry, spoken);
+                    return;
+                }
+            } finally {
+                recovering = false;
+            }
+        }
+        String line = resultSpoken;
+        if (line.isEmpty()) {
+            line = doneLine(steps, anyOk);
+        }
+        if (line.isEmpty()) {
+            line = spoken == null ? "" : spoken.trim();
+        }
         if (line.isEmpty()) {
             line = anyOk ? "Done." : "Failed.";
         }
         if (anyOffline) {
-            line = BeeAsk.clampLine(line.isEmpty() ? "laptop offline" : line + " \u00b7 laptop offline");
+            line = line.isEmpty() ? "laptop offline" : line + " \u00b7 laptop offline";
+        }
+        try {
+            if (anyOk && !anyOffline) {
+                BeeMind.recordOk(context, line);
+            } else {
+                BeeMind.recordFail(context, line);
+            }
+        } catch (Exception ignored) {
         }
         speak(context, line);
     }
 
+    static String spokenFor(List<Map<String, Object>> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return "";
+        }
+        Map<String, Object> first = steps.get(0);
+        if (first == null) {
+            return "";
+        }
+        String tool = first.get("tool") == null ? "" : String.valueOf(first.get("tool"));
+        Map<?, ?> args = first.get("args") instanceof Map ? (Map<?, ?>) first.get("args") : null;
+        String to = arg(args, "to");
+        if (to.isEmpty()) {
+            to = arg(args, "contact");
+        }
+        if ("whatsapp_send".equals(tool)) {
+            return to.isEmpty() ? "Texting them." : ("Texting " + to + ".");
+        }
+        if ("dial".equals(tool)) {
+            return to.isEmpty() ? "Calling." : ("Calling " + to + ".");
+        }
+        if ("mail_send".equals(tool) || "mail_compose".equals(tool)) {
+            return to.isEmpty() ? "Emailing." : ("Emailing " + to + ".");
+        }
+        if ("play_music".equals(tool)) {
+            String q = arg(args, "query");
+            return q.isEmpty() ? "Playing it." : ("Playing " + q + ".");
+        }
+        if ("youtube_play".equals(tool) || "youtube_search".equals(tool)) {
+            return "Opening YouTube.";
+        }
+        if ("auto_scroll".equals(tool)) {
+            return "Scrolling Reels.";
+        }
+        if ("open_app".equals(tool)) {
+            String app = arg(args, "app");
+            if (app.isEmpty()) {
+                app = arg(args, "label");
+            }
+            return app.isEmpty() ? "Opening it." : ("Opening " + app + ".");
+        }
+        if ("notifications_list".equals(tool) || "suggest_reply".equals(tool)) {
+            return "";
+        }
+        return "";
+    }
+
+    private static boolean isQuietTool(List<Map<String, Object>> steps) {
+        if (steps == null || steps.isEmpty() || steps.get(0) == null) {
+            return false;
+        }
+        String tool = steps.get(0).get("tool") == null
+                ? "" : String.valueOf(steps.get(0).get("tool"));
+        return "notifications_list".equals(tool)
+                || "suggest_reply".equals(tool)
+                || "chat_touch".equals(tool);
+    }
+
+    private static boolean isChatTouch(List<Map<String, Object>> steps) {
+        if (steps == null || steps.isEmpty() || steps.get(0) == null) {
+            return false;
+        }
+        String tool = steps.get(0).get("tool") == null
+                ? "" : String.valueOf(steps.get(0).get("tool"));
+        return "chat_touch".equals(tool);
+    }
+
+    static String doneLine(List<Map<String, Object>> steps, boolean ok) {
+        if (!ok) {
+            return "Failed.";
+        }
+        if (steps == null || steps.isEmpty()) {
+            return "Done.";
+        }
+        Map<String, Object> first = steps.get(0);
+        String tool = first == null || first.get("tool") == null
+                ? "" : String.valueOf(first.get("tool"));
+        Map<?, ?> args = first != null && first.get("args") instanceof Map
+                ? (Map<?, ?>) first.get("args") : null;
+        String to = arg(args, "to");
+        if (to.isEmpty()) {
+            to = arg(args, "contact");
+        }
+        if ("whatsapp_send".equals(tool)) {
+            return to.isEmpty() ? "Sent." : ("Sent to " + to + ".");
+        }
+        if ("dial".equals(tool)) {
+            return to.isEmpty() ? "Calling." : ("Calling " + to + ".");
+        }
+        if ("play_music".equals(tool)) {
+            String q = arg(args, "query");
+            return q.isEmpty() ? "Playing it." : ("Playing " + q + ".");
+        }
+        if ("youtube_play".equals(tool) || "youtube_search".equals(tool)) {
+            return "Playing.";
+        }
+        if ("auto_scroll".equals(tool)) {
+            return "Scrolling Reels.";
+        }
+        if ("mail_send".equals(tool) || "mail_compose".equals(tool)) {
+            return to.isEmpty() ? "Emailed." : ("Emailed " + to + ".");
+        }
+        if ("notifications_list".equals(tool) || "suggest_reply".equals(tool)) {
+            return "";
+        }
+        return "Done.";
+    }
+
+    private static String arg(Map<?, ?> args, String key) {
+        if (args == null || key == null) {
+            return "";
+        }
+        Object v = args.get(key);
+        return v == null ? "" : String.valueOf(v).trim();
+    }
+
     static void speak(final Context context, final String line) {
-        final String clamped = BeeAsk.clampLine(line);
-        new Handler(Looper.getMainLooper()).post(new Runnable() {
+        final String clamped = BeeAsk.clampSpeak(line);
+        lastSpoken = clamped;
+        MAIN.post(new Runnable() {
             @Override
             public void run() {
                 ChatStore.add(context, false, clamped);
+                try {
+                    context.getSharedPreferences("bee_island", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString("last_spoken", clamped)
+                            .apply();
+                } catch (Exception ignored) {
+                }
+                speakTts(context, clamped);
             }
         });
+    }
+
+    private static void speakTts(Context context, final String line) {
+        if (context == null || line == null || line.isEmpty()) {
+            return;
+        }
+        if (tts == null) {
+            ttsReady = false;
+            tts = new TextToSpeech(context.getApplicationContext(), new TextToSpeech.OnInitListener() {
+                @Override
+                public void onInit(int status) {
+                    ttsReady = status == TextToSpeech.SUCCESS;
+                    if (ttsReady && tts != null) {
+                        try {
+                            tts.setLanguage(Locale.US);
+                            tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "bee");
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            });
+            return;
+        }
+        if (ttsReady) {
+            try {
+                tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "bee");
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static List<Map<String, Object>> sparkPhone(Context context, String text) {
+        List<Map<String, Object>> tools = new ArrayList<Map<String, Object>>();
+        String key = KeyVault.loadKey(context);
+        if (key == null || key.isEmpty()) {
+            return tools;
+        }
+        try {
+            String mind = BeeMind.injectContext(context);
+            String model = KeyVault.spark(context);
+            if (mind != null && mind.length() > 800) {
+                model = KeyVault.wonder(context);
+            }
+            String raw = MuseClient.completeRaw(key, model, text, mind);
+            tools = MuseClient.parseFunctionCalls(raw);
+            String spoken = MuseClient.extractOutputText(raw);
+            if (spoken != null && !spoken.trim().isEmpty()) {
+                lastSpoken = BeeAsk.clampSpeak(spoken);
+            }
+            if (tools.isEmpty()) {
+                tools = BeeAsk.splitUtterance(text);
+            }
+        } catch (Exception ignored) {
+        }
+        return tools;
+    }
+
+    private static String lastSpokenPlan(Context context, String text) {
+        String s = lastSpoken;
+        return s == null ? "" : s;
+    }
+
+    private static boolean namedRemote(String text, List<Map<String, Object>> steps) {
+        String low = text == null ? "" : text.toLowerCase(Locale.US);
+        if (low.contains("on my laptop") || low.contains("on the server")
+                || low.contains("on my server") || low.contains("on the laptop")) {
+            return true;
+        }
+        return !deviceSteps(steps, true).isEmpty();
+    }
+
+    private static List<Map<String, Object>> deviceSteps(List<Map<String, Object>> steps, boolean remote) {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        if (steps == null) {
+            return out;
+        }
+        for (Map<String, Object> step : steps) {
+            if (step == null || step.get("tool") == null) {
+                continue;
+            }
+            Object deviceObj = step.get("device");
+            String device = deviceObj == null ? "phone" : String.valueOf(deviceObj).toLowerCase(Locale.US);
+            boolean isRemote = "laptop".equals(device) || "server".equals(device);
+            if (isRemote == remote) {
+                out.add(step);
+            }
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

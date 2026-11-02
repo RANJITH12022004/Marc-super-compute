@@ -8,6 +8,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /** Device recall against Rox plus local cache in filesDir/bee_mind. */
@@ -120,6 +122,57 @@ public class BeeMind {
         return note(context, t, b);
     }
 
+    /** Record a failure: POST to Rox as note title 'failed', else append FAILED.md. */
+    public static String recordFail(Context context, String body) {
+        String b = body == null ? "" : body.trim();
+        if (b.isEmpty()) {
+            return "";
+        }
+        boolean sent = false;
+        try {
+            if (context != null && RoxClient.reachable(context)) {
+                sent = RoxClient.postNote(context, "failed", b);
+            }
+        } catch (Exception ignored) {
+            sent = false;
+        }
+        if (!sent) {
+            try {
+                appendCache(context, "FAILED.md", b + "\n");
+            } catch (Exception ignored) {
+            }
+        }
+        return "Noted.";
+    }
+
+    /** Record success: refresh NOW.md via /mind when online, else cache given text. */
+    public static String recordOk(Context context, String body) {
+        String b = body == null ? "" : body.trim();
+        try {
+            if (context != null && RoxClient.reachable(context)) {
+                String fresh = RoxClient.getMind(context, "now");
+                if (fresh != null && !fresh.trim().isEmpty()) {
+                    String clean = fresh.trim();
+                    writeCache(context, "NOW.md", clean);
+                    return clean;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (!b.isEmpty()) {
+            try {
+                writeCache(context, "NOW.md", b);
+            } catch (Exception ignored) {
+            }
+            return b;
+        }
+        return readCache(context, "NOW.md");
+    }
+
+    public static String recordOk(Context context) {
+        return recordOk(context, "");
+    }
+
     public static String injectContext(Context context) {
         try {
             whoAmI(context);
@@ -131,14 +184,19 @@ public class BeeMind {
         }
         String me = readCache(context, "ME.md");
         String now = readCache(context, "NOW.md");
+        String failed = readCache(context, "FAILED.md");
         if (me == null) {
             me = "";
         }
         if (now == null) {
             now = "";
         }
-        me = me.trim().replaceAll("\\s+", " ");
-        now = now.trim().replaceAll("\\s+", " ");
+        if (failed == null) {
+            failed = "";
+        }
+        me = stripSecretLines(me).trim().replaceAll("\\s+", " ");
+        now = stripSecretLines(now).trim().replaceAll("\\s+", " ");
+        String failedTail = lastFiveLines(stripSecretLines(failed).trim());
         StringBuilder sb = new StringBuilder();
         if (!me.isEmpty()) {
             sb.append(me);
@@ -148,6 +206,12 @@ public class BeeMind {
                 sb.append("\n");
             }
             sb.append(now);
+        }
+        if (!failedTail.isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(failedTail);
         }
         String out = sb.toString().trim();
         if (out.length() > CONTEXT_MAX) {
@@ -209,6 +273,76 @@ public class BeeMind {
         note(context, "note", body);
         AskRouter.speak(context, "Noted.");
         return true;
+    }
+
+    private static String stripSecretLines(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        String[] lines = text.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String low = line.toLowerCase(Locale.US);
+            if (low.contains("authorization")) {
+                continue;
+            }
+            if (low.matches("(?s).*api[\\s_\\-]*keys?.*")) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(line);
+        }
+        return sb.toString();
+    }
+
+    public static int failedCount(Context context) {
+        String failed = stripSecretLines(readCache(context, "FAILED.md"));
+        if (failed == null || failed.trim().isEmpty()) {
+            return 0;
+        }
+        int n = 0;
+        String[] lines = failed.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            if (lines[i] != null && !lines[i].trim().isEmpty()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static String lastFiveLines(String text) {
+        if (text == null) {
+            return "";
+        }
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        String[] lines = trimmed.split("\n");
+        List<String> kept = new ArrayList<String>();
+        for (int i = 0; i < lines.length; i++) {
+            String l = lines[i] == null ? "" : lines[i].trim();
+            if (l.isEmpty()) {
+                continue;
+            }
+            kept.add(lines[i].trim());
+        }
+        if (kept.isEmpty()) {
+            return "";
+        }
+        int from = kept.size() > 5 ? kept.size() - 5 : 0;
+        StringBuilder sb = new StringBuilder();
+        for (int i = from; i < kept.size(); i++) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(kept.get(i));
+        }
+        String out = sb.toString().replaceAll("\\s+", " ");
+        return out.trim();
     }
 
     private static File mindDir(Context context) {

@@ -38,6 +38,10 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        }
         setContentView(R.layout.activity_home);
 
         islandPage = findViewById(R.id.island_page);
@@ -116,6 +120,8 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
                 }
             });
         }
+        handleAskIntent(getIntent());
+
         View send = findViewById(R.id.send_button);
         final EditText composer = findViewById(R.id.composer);
         if (send != null) {
@@ -184,7 +190,12 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
         final EditText rox = findViewById(R.id.rox_host);
         if (rox != null) {
             SharedPreferences p = getSharedPreferences("bee_setup", MODE_PRIVATE);
-            rox.setText(p.getString("rox_url", ""));
+            String saved = p.getString("rox_url", "");
+            if (saved == null || saved.trim().isEmpty()) {
+                rox.setText(RoxClient.DEFAULT_DOOR);
+            } else {
+                rox.setText(saved);
+            }
             rox.setOnFocusChangeListener(new View.OnFocusChangeListener() {
                 @Override
                 public void onFocusChange(View v, boolean hasFocus) {
@@ -208,6 +219,8 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
 
         ChatStore.setListener(this);
         refreshChat();
+        refreshIsland();
+        refreshMind();
         refreshMask();
         showPage(0);
         startIsland(null, null);
@@ -219,6 +232,8 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
         refreshPermissions();
         refreshMask();
         refreshChat();
+        refreshIsland();
+        refreshMind();
     }
 
     @Override
@@ -233,6 +248,8 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
             @Override
             public void run() {
                 refreshChat();
+                refreshIsland();
+                refreshMind();
             }
         });
     }
@@ -259,7 +276,94 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
         if (b == null) {
             return;
         }
-        b.setTextColor(on ? 0xFFE8B15A : 0xFFF5F5F7);
+        if (on) {
+            b.setBackgroundColor(0xFFE8B15A);
+            b.setTextColor(0xFF000000);
+        } else {
+            b.setBackgroundColor(0xFF1C1C1E);
+            b.setTextColor(0xFFF5F5F7);
+        }
+    }
+
+    private void refreshIsland() {
+        TextView spoken = findViewById(R.id.island_spoken);
+        TextView state = findViewById(R.id.island_state);
+        String line = AskRouter.lastSpoken();
+        if (line == null || line.trim().isEmpty()) {
+            try {
+                line = getSharedPreferences("bee_island", MODE_PRIVATE)
+                        .getString("last_spoken", "");
+            } catch (Exception ignored) {
+                line = "";
+            }
+        }
+        if (spoken != null) {
+            spoken.setText(line == null || line.trim().isEmpty() ? "bee listening..." : line);
+        }
+        String label = "Done";
+        if (PendingPlan.hasPending() && BeeAsk.needsConfirm(PendingPlan.get())) {
+            label = "Planning";
+        } else if (line != null) {
+            String low = line.toLowerCase();
+            if (low.contains("listen")) {
+                label = "Listening";
+            } else if (low.contains("fail") || low.contains("didn't catch")) {
+                label = "Failed";
+            } else if (low.contains("plan")) {
+                label = "Planning";
+            }
+        }
+        if (state != null) {
+            state.setText(label);
+        }
+    }
+
+    private void refreshMind() {
+        TextView mind = findViewById(R.id.mind_status);
+        if (mind == null) {
+            return;
+        }
+        int n = 0;
+        try {
+            n = BeeMind.failedCount(this);
+        } catch (Exception ignored) {
+            n = 0;
+        }
+        mind.setText("fails " + n);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleAskIntent(intent);
+    }
+
+    private void handleAskIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        String ask = intent.getStringExtra("ask");
+        if (ask == null || ask.trim().isEmpty()) {
+            ask = intent.getStringExtra("text");
+        }
+        if (ask == null || ask.trim().isEmpty()) {
+            return;
+        }
+        final String line = ask.trim();
+        android.util.Log.i("bee", "ask extra " + line);
+        showPage(1);
+        View host = islandPage != null ? islandPage : chatPage;
+        if (host == null) {
+            AskRouter.handle(this, line);
+            return;
+        }
+        host.post(new Runnable() {
+            @Override
+            public void run() {
+                AskRouter.handle(IslandActivity.this, line);
+            }
+        });
     }
 
     private void sendComposer(EditText composer) {
@@ -307,27 +411,22 @@ public class IslandActivity extends Activity implements ChatStore.Listener {
         if (chatAdapter != null) {
             chatAdapter.notifyDataSetChanged();
         }
-        boolean pending = PendingPlan.hasPending();
+        boolean pending = PendingPlan.hasPending()
+                && BeeAsk.needsConfirm(PendingPlan.get());
         View confirmRow = findViewById(R.id.confirm_row);
         if (confirmRow != null) {
             confirmRow.setVisibility(pending ? View.VISIBLE : View.GONE);
         }
         View yesView = findViewById(R.id.confirm_yes);
         View cancelView = findViewById(R.id.confirm_cancel);
-        String prompt = PendingPlan.prompt();
-        if (prompt == null) {
-            prompt = "";
-        }
-        prompt = prompt.trim();
-        if (prompt.isEmpty()) {
-            prompt = "this";
-        }
         if (yesView instanceof TextView) {
-            ((TextView) yesView).setText(prompt);
+            ((TextView) yesView).setText("Send");
         }
         if (cancelView instanceof TextView) {
-            ((TextView) cancelView).setText("that");
+            ((TextView) cancelView).setText("Cancel");
         }
+        refreshIsland();
+        refreshMind();
     }
 
     private void refreshPermissions() {

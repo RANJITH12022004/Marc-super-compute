@@ -32,6 +32,39 @@ Loopback-only planner. Never expose `:8096` off loopback.
    curl -s http://127.0.0.1:8096/health
    ```
 
+## Bridge
+
+Door pull -> loopback muse -> door result. The bridge never binds `:8096`
+and only talks to `DOOR_URL` (https) plus loopback muse at
+`http://127.0.0.1:8096`.
+
+1. Copy the bridge to Rox:
+
+   ```sh
+   scp -r apps/server/bridge rox:/home/rox/marc-muse/apps/server/bridge
+   scp deploy/rox/marc-bridge.service rox:/tmp/marc-bridge.service
+   ```
+
+2. Install the unit and set `DOOR_URL` + `MARC_TOKEN` in
+   `/home/rox/marc-muse.env` (`DOOR_URL` is an https origin with no
+   trailing slash):
+
+   ```sh
+   sudo cp /tmp/marc-bridge.service /etc/systemd/system/marc-bridge.service
+   cat >> /home/rox/marc-muse.env <<'EOF'
+   DOOR_URL=https://door.example.com
+   MARC_TOKEN=change-me
+   EOF
+   ```
+
+3. Enable and start (after `marc-muse`):
+
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now marc-bridge
+   systemctl status marc-bridge
+   ```
+
 ## Live `marc_api.py` patch
 
 Paste `plan_with_muse.py` into `marc_api.py`, set `MARC_PLANNER=muse`,
@@ -46,4 +79,5 @@ on-device. Needle `:18096` stays off. Copy [../phone/needle-off.env](../phone/ne
 ## Security
 
 - Binds `127.0.0.1:8096` only; do not add `ListenStream` / firewall rules for it.
+- Bridge binds no ports; it only polls `DOOR_URL` and posts to loopback muse.
 - Keep `MARC_MODE=sandbox` until you explicitly flip live.

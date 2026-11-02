@@ -643,6 +643,160 @@ public final class MuseClient {
         }
     }
 
+    /**
+     * Transcribe audio via the Responses API with the voice model.
+     * Never prints or logs the API key.
+     *
+     * @param apiKey API key
+     * @param audio raw audio bytes (may be null/empty)
+     * @param format audio format hint ("wav", "m4a" or "mp4"; defaults to "wav")
+     * @return transcript text or "" on failure
+     */
+    public static String transcribe(String apiKey, byte[] audio, String format) {
+        if (audio == null || audio.length == 0) {
+            return "";
+        }
+        String fmt = normalizeTranscribeFormat(format);
+        String b64;
+        try {
+            b64 = java.util.Base64.getEncoder().encodeToString(audio);
+        } catch (Exception e) {
+            return "";
+        }
+        if (b64 == null || b64.isEmpty()) {
+            return "";
+        }
+        try {
+            Map<String, Object> audioPayload = new LinkedHashMap<String, Object>();
+            audioPayload.put("data", b64);
+            audioPayload.put("format", fmt);
+            Map<String, Object> part = new LinkedHashMap<String, Object>();
+            part.put("type", "input_audio");
+            part.put("input_audio", audioPayload);
+            List<Object> content = new ArrayList<Object>();
+            content.add(part);
+            Map<String, Object> msg = new LinkedHashMap<String, Object>();
+            msg.put("type", "message");
+            msg.put("role", "user");
+            msg.put("content", content);
+            List<Object> input = new ArrayList<Object>();
+            input.add(msg);
+            Map<String, Object> payload = new LinkedHashMap<String, Object>();
+            payload.put("model", VOICE);
+            payload.put("input", input);
+            String raw = post(apiKey, payload, 20000);
+            if (raw == null || raw.isEmpty()) {
+                return "";
+            }
+            String out = extractOutputText(raw);
+            if (out != null && !out.isEmpty()) {
+                return out;
+            }
+            try {
+                Object parsed = parseJson(raw);
+                String t = findTranscriptText(parsed);
+                if (t != null && !t.isEmpty()) {
+                    return t;
+                }
+            } catch (Exception ignored) {
+            }
+            for (Map<String, Object> evt : parseSseEvents(raw)) {
+                String t = findTranscriptText(evt);
+                if (t != null && !t.isEmpty()) {
+                    return t;
+                }
+            }
+            return "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String normalizeTranscribeFormat(String format) {
+        String f = format == null ? "" : format.trim().toLowerCase(java.util.Locale.ROOT);
+        if (f.isEmpty()) {
+            return "wav";
+        }
+        if (f.startsWith(".")) {
+            f = f.substring(1);
+        }
+        int slash = f.lastIndexOf('/');
+        if (slash >= 0) {
+            f = f.substring(slash + 1);
+        }
+        if ("wav".equals(f) || "wave".equals(f) || "x-wav".equals(f)) {
+            return "wav";
+        }
+        if ("m4a".equals(f) || "x-m4a".equals(f)) {
+            return "m4a";
+        }
+        if ("mp4".equals(f)) {
+            return "mp4";
+        }
+        return "wav";
+    }
+
+    private static String findTranscriptText(Object node) {
+        String s = deepFindKey(node, "transcript");
+        if (s != null && !s.isEmpty()) {
+            return s;
+        }
+        s = deepFindKey(node, "text");
+        if (s != null && !s.isEmpty()) {
+            return s;
+        }
+        s = deepFindKey(node, "output_text");
+        if (s != null && !s.isEmpty()) {
+            return s;
+        }
+        return null;
+    }
+
+    private static String deepFindKey(Object node, String key) {
+        if (node == null || key == null) {
+            return null;
+        }
+        if (node instanceof Map) {
+            Map<?, ?> m = (Map<?, ?>) node;
+            Object direct = m.get(key);
+            if (direct instanceof String) {
+                String s = (String) direct;
+                if (!s.isEmpty()) {
+                    return s;
+                }
+            }
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                Object v = e.getValue();
+                if (v == direct && direct instanceof String) {
+                    continue;
+                }
+                String found = deepFindKey(v, key);
+                if (found != null && !found.isEmpty()) {
+                    return found;
+                }
+            }
+            return null;
+        }
+        if (node instanceof List) {
+            for (Object o : (List<?>) node) {
+                String found = deepFindKey(o, key);
+                if (found != null && !found.isEmpty()) {
+                    return found;
+                }
+            }
+            return null;
+        }
+        if (node instanceof Object[]) {
+            for (Object o : (Object[]) node) {
+                String found = deepFindKey(o, key);
+                if (found != null && !found.isEmpty()) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
     private static String parseString(String s, int[] pos) throws Exception {
         // assumes s[pos] == '"'
         pos[0]++;
@@ -768,6 +922,11 @@ public final class MuseClient {
 
     public static String complete(String apiKey, String model, String text, String mindContext)
             throws java.io.IOException {
+        return extractOutputText(completeRaw(apiKey, model, text, mindContext));
+    }
+
+    public static String completeRaw(String apiKey, String model, String text, String mindContext)
+            throws java.io.IOException {
         String input = text == null ? "" : text;
         if (mindContext != null) {
             String mind = mindContext.trim();
@@ -783,8 +942,7 @@ public final class MuseClient {
             payload.remove("Authorization");
             payload.remove("authorization");
         }
-        String raw = post(apiKey, payload, 120000);
-        return extractOutputText(raw);
+        return post(apiKey, payload, 120000);
     }
 
     static String extractOutputText(String raw) {
@@ -831,6 +989,11 @@ public final class MuseClient {
         tools.add(fn("dial", "to"));
         tools.add(fn("open_app", "app"));
         tools.add(fn("type_into", "text"));
+        tools.add(fn("wait_ms", "ms"));
+        tools.add(fn("click_text", "text"));
+        tools.add(fn("swipe", "direction"));
+        tools.add(fn("scroll", "direction"));
+        tools.add(fn("press_back"));
         return tools;
     }
 
@@ -843,10 +1006,27 @@ public final class MuseClient {
         List<Map<String, Object>> steps = new ArrayList<Map<String, Object>>();
         List<Object> output;
         if (obj instanceof String) {
-            try {
-                obj = parseJson((String) obj);
-            } catch (Exception e) {
-                return steps;
+            String raw = (String) obj;
+            if (raw.contains("data:")) {
+                List<Object> collected = new ArrayList<Object>();
+                for (Map<String, Object> evt : parseSseEvents(raw)) {
+                    collectFunctionItems(evt, collected);
+                }
+                if (!collected.isEmpty()) {
+                    obj = collected;
+                } else {
+                    try {
+                        obj = parseJson(raw);
+                    } catch (Exception e) {
+                        return steps;
+                    }
+                }
+            } else {
+                try {
+                    obj = parseJson(raw);
+                } catch (Exception e) {
+                    return steps;
+                }
             }
         }
         if (obj instanceof List) {
@@ -958,6 +1138,52 @@ public final class MuseClient {
 
     public interface StepRunner {
         Map<String, Object> run(Map<String, Object> step);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void collectFunctionItems(Map<String, Object> evt, List<Object> collected) {
+        if (evt == null || collected == null) {
+            return;
+        }
+        Object type = evt.get("type");
+        if ("function_call".equals(String.valueOf(type)) || "tool_call".equals(String.valueOf(type))) {
+            collected.add(evt);
+        }
+        Object item = evt.get("item");
+        if (item instanceof Map) {
+            Map<String, Object> m = (Map<String, Object>) item;
+            Object it = m.get("type");
+            if ("function_call".equals(String.valueOf(it)) || "tool_call".equals(String.valueOf(it))) {
+                collected.add(m);
+            }
+        }
+        Object output = evt.get("output");
+        if (output instanceof List) {
+            for (Object o : (List<?>) output) {
+                if (o instanceof Map) {
+                    Map<String, Object> m = (Map<String, Object>) o;
+                    Object ot = m.get("type");
+                    if ("function_call".equals(String.valueOf(ot)) || "tool_call".equals(String.valueOf(ot))) {
+                        collected.add(m);
+                    }
+                }
+            }
+        }
+        Object response = evt.get("response");
+        if (response instanceof Map) {
+            Object ro = ((Map<?, ?>) response).get("output");
+            if (ro instanceof List) {
+                for (Object o : (List<?>) ro) {
+                    if (o instanceof Map) {
+                        Map<String, Object> m = (Map<String, Object>) o;
+                        Object ot = m.get("type");
+                        if ("function_call".equals(String.valueOf(ot)) || "tool_call".equals(String.valueOf(ot))) {
+                            collected.add(m);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static Map<String, Object> fn(String name, String... props) {

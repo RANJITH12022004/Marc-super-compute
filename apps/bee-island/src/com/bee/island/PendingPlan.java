@@ -8,8 +8,8 @@ import java.util.Map;
 /**
  * Static pending tool-step queue (no Android imports).
  *
- * <p>Confirm-before-act staging: tools NEVER auto-run from here.
- * This class only stores copies and never dispatches anything.
+ * <p>Only PRD CONFIRM_TOOLS (mail/WA/IG/SMS/calendar/dial/food) are staged.
+ * Everyday open/play/type/search never sit in this queue.
  */
 public final class PendingPlan {
 

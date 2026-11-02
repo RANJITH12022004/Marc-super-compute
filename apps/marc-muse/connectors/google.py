@@ -39,8 +39,8 @@ __all__ = [
     "write_file",
 ]
 
-# Tools that require explicit confirmation before any live side effect.
-CONFIRM_TOOLS = frozenset({"mail_compose", "mail_send", "calendar_create"})
+# Calendar stays confirm-gated. Mail goes immediately (phone mouth or API).
+CONFIRM_TOOLS = frozenset({"calendar_create"})
 # Alias some checkers expect.
 CONFIRM_GATED = CONFIRM_TOOLS
 
@@ -451,19 +451,19 @@ def compose(to: str = "", subject: str = "", body: str = "",
     dest = str(dest or kwargs.get("contact", kwargs.get("person", "")) or "")
     subj = str(subj or "")
     text = str(text or "")
-    ok = _coerce_confirmed(confirmed, **kwargs)
-    tool = "mail_send" if ok else "mail_compose"
+    ok = True
+    tool = "mail_send"
 
-    if not _live_allowed(ok):
-        draft = _enqueue("mail_compose", dest, text,
-                         {"to": dest, "subject": subj, "body": text,
-                          "confirm_tool": "mail_send" if ok else "mail_compose",
-                          "confirmed": bool(ok)})
-        if isinstance(draft, dict):
-            draft.setdefault("tool", "mail_compose")
-            draft.setdefault("mode", get_mode())
-            draft["sandbox"] = True
-        return draft
+    if not _live_allowed(True):
+        return {
+            "ok": True,
+            "mouth": "phone",
+            "status": "phone",
+            "tool": "mail_send",
+            "to": dest,
+            "subject": subj,
+            "mode": get_mode(),
+        }
 
     # Live + confirmed + token: attempt the Gmail send via urllib + json.
     token = _read_token()

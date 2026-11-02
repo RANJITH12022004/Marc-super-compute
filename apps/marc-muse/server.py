@@ -7,6 +7,7 @@ Bind:   MARC_MUSE_BIND : MARC_MUSE_PORT  (default 127.0.0.1:8096)
 import importlib.util
 import json
 import os
+import re
 import sys
 import hashlib
 import hmac
@@ -335,6 +336,26 @@ def _call_parse_webhook(payload):
     return None
 
 
+def _slug_person(raw):
+    s = re.sub(r"[^a-z0-9]+", "-", str(raw or "").strip().lower()).strip("-")
+    return s[:48] or "unknown"
+
+
+def _ig_draft_line(sender, text_v):
+    """Best-effort Suggested reply line via style.draft_like_me."""
+    slug = _slug_person(sender)
+    draft = ""
+    try:
+        import style as _style
+
+        draft = _style.draft_like_me(slug, "instagram", text_v or "") or ""
+    except Exception:
+        draft = ""
+    if not draft:
+        return ""
+    return "Suggested reply: %s" % str(draft).strip()[:240]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "marc-muse/1.0"
 
@@ -480,6 +501,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 messages = []
         count = 0
+        drafts_out = []
         for m in messages:
             try:
                 if isinstance(m, dict):
@@ -488,14 +510,37 @@ class Handler(BaseHTTPRequestHandler):
                         t = t.get("body") or t.get("text") or ""
                     text_v = str(t if t is not None else (m.get("body") or ""))
                     if not text_v:
-                        # Fall back to raw json for empty texts so nothing is lost.
                         try:
                             text_v = json.dumps(m, ensure_ascii=False)[:500]
                         except Exception:
                             text_v = str(m)[:500]
-                    sender = str(m.get("from") or m.get("sender") or "")
+                    sender = str(
+                        m.get("from_") or m.get("from") or m.get("sender") or ""
+                    )
+                    channel = str(
+                        m.get("channel") or m.get("source") or "meta"
+                    ).lower()
                     line = ("%s: %s" % (sender, text_v)).strip() if sender else text_v.strip()
-                    src = str(m.get("source") or "meta")
+                    src = channel if channel else "meta"
+                    mid = str(m.get("id") or m.get("mid") or "")
+                    try:
+                        from brain import index as _mind_index
+
+                        _mind_index.upsert_message(
+                            channel=channel or "instagram",
+                            external_id=mid or sender,
+                            person_slug=_slug_person(sender),
+                            direction="in",
+                            body=text_v,
+                            message_id=mid,
+                        )
+                    except Exception:
+                        pass
+                    if "instagram" in channel or channel == "ig":
+                        draft_line = _ig_draft_line(sender, text_v)
+                        if draft_line:
+                            line = "%s | %s" % (line, draft_line)
+                            drafts_out.append(draft_line)
                 else:
                     line = str(m)
                     src = "meta"
@@ -504,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                 count += 1
             except Exception:
                 continue
-        self._send(200, {"ok": True, "count": count})
+        self._send(200, {"ok": True, "count": count, "drafts": drafts_out})
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -631,6 +676,19 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, result)
             return
+        if path == "/note":
+            data = self._read_json()
+            title = data.get("title") or ""
+            body = data.get("body") or data.get("text") or ""
+            try:
+                from brain import recall as _recall
+
+                res = _recall.mind_note(title=title, body=body)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": str(exc)})
+                return
+            self._send(200, res if isinstance(res, dict) else {"ok": True, "text": str(res)})
+            return
         if path == "/utterance":
             data = self._read_json()
             text = data.get("text") or ""
@@ -639,6 +697,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             context = data.get("context") or os.environ.get("MARC_CONTEXT") or "desk"
             source = data.get("source") or data.get("session_id") or "phone"
+            try:
+                from brain import vault as _vault
+
+                _vault.append_asked(text, source)
+            except Exception:
+                try:
+                    if sessions is not None:
+                        sessions.append_daily(str(text), source=str(source))
+                except Exception:
+                    pass
+            try:
+                from brain.recall import _cognee_remember as _cg
+
+                _cg(str(text), dataset="personal")
+            except Exception:
+                pass
             try:
                 import island
                 island.set_state("listen")
@@ -669,11 +743,29 @@ class Handler(BaseHTTPRequestHandler):
                 snap = island.snapshot()
             except Exception:
                 snap = {}
+            phone_steps = []
+            try:
+                for s in plan:
+                    if not isinstance(s, dict):
+                        continue
+                    dev = str(s.get("device") or "phone").lower()
+                    if dev == "phone":
+                        args = s.get("args")
+                        if isinstance(args, dict) and args.get("label") and not args.get("app"):
+                            args = dict(args)
+                            args["app"] = args.get("label")
+                            s = dict(s)
+                            s["args"] = args
+                        phone_steps.append(s)
+            except Exception:
+                phone_steps = []
             self._send(200, {
                 "ok": True,
                 "reply": result.get("reply", ""),
+                "spoken": result.get("reply", ""),
                 "session_id": result.get("session_id") or source,
                 "plan": plan,
+                "phone_steps": phone_steps,
                 "island": snap,
                 "source": source,
                 "context": context,
@@ -701,6 +793,42 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": False, "error": str(exc),
                                  "session_id": session_id})
                 return
+            try:
+                from brain import vault as _vault
+
+                rows = []
+                if isinstance(result, dict):
+                    rows = result.get("results") or result.get("steps") or []
+                utterance = data.get("text") or ""
+                any_fail = False
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("ok") is False:
+                        any_fail = True
+                        _vault.append_failed(
+                            utterance,
+                            tool=row.get("tool") or "",
+                            device=row.get("device") or "",
+                            error=row.get("error") or row.get("output") or "fail",
+                        )
+                if not any_fail:
+                    _vault.append_asked("done " + str(utterance), session_id)
+                    acts = []
+                    for row in rows:
+                        if isinstance(row, dict):
+                            acts.append(row)
+                    if acts:
+                        _vault.update_now_last(acts)
+                try:
+                    from brain.recall import _cognee_remember as _cg
+
+                    line = ("failed " if any_fail else "done ") + str(utterance)
+                    _cg(line, dataset="personal")
+                except Exception:
+                    pass
+            except Exception:
+                pass
             self._send(200, result)
             return
         if path in ("/muse/stop", "/stop"):

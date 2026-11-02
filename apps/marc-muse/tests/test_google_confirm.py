@@ -107,17 +107,16 @@ class GoogleConfirmTest(unittest.TestCase):
         self.assertFalse(GOOGLE.is_sandbox("live"))
 
     def test_confirm_gated_tools(self):
-        """mail_compose / mail_send / calendar_create require confirmation."""
+        """calendar_create stays confirm-gated; mail does not."""
         gated = set(getattr(GOOGLE, "CONFIRM_TOOLS", set()))
         alias = set(getattr(GOOGLE, "CONFIRM_GATED", gated))
-        for tool in ("mail_compose", "mail_send", "calendar_create"):
-            self.assertIn(tool, gated, "%s must be confirm-gated" % tool)
-            self.assertIn(tool, alias)
-
-    # -- compose is a draft, not a send ----------------------------------
+        self.assertIn("calendar_create", gated)
+        self.assertIn("calendar_create", alias)
+        self.assertNotIn("mail_compose", gated)
+        self.assertNotIn("mail_send", gated)
 
     def test_compose_creates_draft_not_send(self):
-        """compose() without a token queues a draft — nothing is sent."""
+        """Without a token, compose uses the phone mouth — nothing is emailed."""
         res = GOOGLE.compose(
             to="sam.professional.fake@gmail.com (FAKE)",
             subject="FAKE: hello",
@@ -125,20 +124,11 @@ class GoogleConfirmTest(unittest.TestCase):
         )
         self.assertIsInstance(res, dict)
         self.assertNotEqual(res.get("status"), "sent")
-        self.assertIn(res.get("status"), ("queued", "draft"))
-        self.assertTrue(res.get("sandbox"))
-        self.assertEqual(res.get("tool"), "mail_compose")
-        # Draft-only channel mapping: mail_compose -> mail.
-        self.assertEqual(res.get("channel"), "mail")
-        # The draft is persisted via drafts (file-backed).
-        draft_id = res.get("id")
-        self.assertTrue(draft_id)
-        stored = DRAFTS.get(draft_id)
-        self.assertIsNotNone(stored)
-        self.assertEqual(stored.get("status"), "queued")
+        self.assertIn(res.get("status"), ("queued", "draft", "phone"))
+        self.assertTrue(res.get("ok"))
 
     def test_compose_confirmed_still_draft_without_token(self):
-        """Even confirmed=True stays a draft when there is no token/live."""
+        """Without a live token, mail stays off the Gmail API (phone mouth)."""
         res = GOOGLE.compose(
             to="sam.professional.fake@gmail.com (FAKE)",
             subject="FAKE: confirmed hello",
@@ -147,8 +137,8 @@ class GoogleConfirmTest(unittest.TestCase):
         )
         self.assertIsInstance(res, dict)
         self.assertNotEqual(res.get("status"), "sent")
-        self.assertIn(res.get("status"), ("queued", "draft"))
-        self.assertTrue(res.get("sandbox"))
+        self.assertIn(res.get("status"), ("queued", "draft", "phone"))
+        self.assertTrue(res.get("ok"))
 
     # -- calendar_create is a draft in sandbox ----------------------------
 

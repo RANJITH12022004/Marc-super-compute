@@ -4,11 +4,21 @@ Mirrors apps/bee-android/bee_ask.py behavior but normalizes tool names to:
 whatsapp_send, play_music, mail_compose, dial, open_app, type_into.
 """
 import re
+import time
 
 SPARK_MODEL = "muse-spark-1.3"
 WONDER_MODEL = "muse-wonder-1.0"
 
+CONFIRM_TOOLS = frozenset([
+    "instagram_send",
+    "sms_send",
+    "calendar_create",
+    "open_food_search",
+])
+
 __all__ = [
+    "CONFIRM_TOOLS",
+    "needs_confirm",
     "skip_muse",
     "split_clauses",
     "clause_to_tool",
@@ -21,6 +31,69 @@ __all__ = [
 ]
 
 
+def needs_confirm(steps_or_tool):
+    if isinstance(steps_or_tool, str):
+        try:
+            t = steps_or_tool.strip()
+        except Exception:
+            try:
+                t = str(steps_or_tool)
+            except Exception:
+                return False
+        return t in CONFIRM_TOOLS
+    if isinstance(steps_or_tool, dict):
+        try:
+            tool = steps_or_tool.get('tool')
+        except Exception:
+            return False
+        if isinstance(tool, str):
+            try:
+                tool = tool.strip()
+            except Exception:
+                pass
+            return tool in CONFIRM_TOOLS
+        return False
+    if isinstance(steps_or_tool, (list, tuple)):
+        try:
+            seq = list(steps_or_tool)
+        except Exception:
+            return False
+        for s in seq:
+            if isinstance(s, str):
+                try:
+                    ts = s.strip()
+                except Exception:
+                    continue
+                if ts in CONFIRM_TOOLS:
+                    return True
+            elif isinstance(s, dict):
+                try:
+                    t = s.get('tool')
+                except Exception:
+                    continue
+                if isinstance(t, str):
+                    try:
+                        t = t.strip()
+                    except Exception:
+                        continue
+                    if t in CONFIRM_TOOLS:
+                        return True
+            elif isinstance(s, (list, tuple)) and len(s) > 0:
+                try:
+                    t0 = s[0]
+                except Exception:
+                    continue
+                if isinstance(t0, str):
+                    try:
+                        t0 = t0.strip()
+                    except Exception:
+                        continue
+                    if t0 in CONFIRM_TOOLS:
+                        return True
+        return False
+    return False
+
+
 def skip_muse(text):
     if not isinstance(text, str):
         if text is None:
@@ -30,9 +103,23 @@ def skip_muse(text):
         except Exception:
             return False
     low = text.lower()
+    if 'on my laptop' in low or 'on the server' in low:
+        return False
     if re.search(r'\bdemo\b', low):
         return False
-    if 'email' in low or 'whatsapp' in low:
+    if 'email' in low:
+        return False
+    if 'whatsapp' in low or re.search(r'\btext\s+\S', low):
+        return True
+    if 'notification' in low or 'suggest reply' in low or 'what should i reply' in low:
+        return True
+    if re.search(r'\bplay\b', low):
+        return False
+    if re.search(r'\breels\b', low) or re.search(r'\bauto\s*scroll\b', low):
+        return False
+    if re.search(r'\b(instagram|insta)\b', low) and re.search(r'\b(scroll|reel)', low):
+        return False
+    if re.search(r'\b(youtube|youtu)\b', low) and re.search(r'\b(play|search|first)\b', low):
         return False
     try:
         clauses = split_clauses(text)
@@ -50,12 +137,26 @@ def skip_muse(text):
         return False
     if re.search(r',\s*(?:and\s+)?(?:text|whatsapp|play|email|mail|call|dial|open)\b', low):
         return False
+    if re.search(r'\b(?:scroll|swipe|tap|click)\b', low):
+        return False
     stripped = low.strip()
-    if stripped.startswith('type '):
+    if stripped.startswith('type ') or stripped == 'type':
         return True
-    if re.match(r'open\s+spotify\b', stripped):
+    if stripped.startswith('open ') or stripped == 'open':
         return True
+    if re.match(r'open\s+\S', stripped):
+        return True
+    if re.match(r'play\b', stripped):
+        return False
     if 'youtube' in low:
+        return True
+    if 'google' in low:
+        return True
+    if stripped.startswith('search ') or stripped == 'search':
+        return True
+    if re.match(r'search\b', stripped):
+        return True
+    if re.search(r'\bopen\s+\S+.*\btype\s+.+', low):
         return True
     return False
 
@@ -75,7 +176,7 @@ def split_clauses(text):
         r'|\s*,?\s*\bafter\s+that\b\s*,?\s*'
         r'|\s*,?\s*\band\s+then\b\s*,?\s*'
         r'|\s*,?\s*\bthen\b\s*,?\s*'
-        r'|\s*(?:,\s*(?:and\s+)?|\band\b\s+)(?=(?:text|whatsapp|play|email|mail|call|dial|open)\b)'
+        r'|\s*(?:,\s*(?:and\s+)?|\band\b\s+)(?=(?:text|whatsapp|play|email|mail|call|dial|open|auto\s*scroll|scroll|swipe|tap|click|type|search)\b)'
     )
     parts = re.split(pat, text, flags=re.IGNORECASE)
     out = []
@@ -145,17 +246,77 @@ def clause_to_tool(clause):
             except Exception:
                 clause = ''
     low_raw = clause.lower()
-    device = 'laptop' if 'on my laptop' in low_raw else 'phone'
+    device = 'laptop' if ('on my laptop' in low_raw or 'on the server' in low_raw) else 'phone'
     cleaned = re.sub(r'\bon\s+my\s+laptop\b', '', clause, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bon\s+the\s+server\b', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    m = re.match(r'^\s*(?:auto\s*scroll|scroll|swipe)\b(.*)$', cleaned, flags=re.IGNORECASE)
+    if m:
+        rest = (m.group(1) or '').lower()
+        if 'reel' in rest or 'auto' in low_raw:
+            return _ToolResult('auto_scroll', {'direction': 'up'}, device)
+        direction = 'up'
+        if 'down' in rest:
+            direction = 'down'
+        elif 'left' in rest:
+            direction = 'left'
+        elif 'right' in rest:
+            direction = 'right'
+        return _ToolResult('swipe', {'direction': direction}, device)
+    m = re.match(r'^\s*(?:tap|click)\b\s*(.*)$', cleaned, flags=re.IGNORECASE)
+    if m:
+        return _ToolResult('click_text', {'text': (m.group(1) or '').strip()}, device)
+    m = re.match(
+        r'^\s*(?:touch|tell|ping|message)\s+(.+?)\s+(?:about|re|regarding)\s+(.+)$',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        pkg = 'com.whatsapp' if ('personal whatsapp' in low_raw or 'my whatsapp' in low_raw) else 'com.whatsapp.w4b'
+        return _ToolResult(
+            'chat_touch',
+            {
+                'to': (m.group(1) or '').strip(),
+                'topic': (m.group(2) or '').strip(),
+                'channel': 'whatsapp',
+                'package': pkg,
+            },
+            device,
+        )
+    if re.search(r'\b(?:new\s+)?notifications?\b', low_raw) or 'what are the new notification' in low_raw:
+        return _ToolResult('notifications_list', {}, device)
+    m = re.match(
+        r'^\s*(?:what\s+should\s+i\s+reply\s+(?:to\s+)?|suggest\s+(?:a\s+)?reply\s+(?:to\s+)?|reply\s+to\s+)(.+)$',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        return _ToolResult('suggest_reply', {'to': (m.group(1) or '').strip()}, device)
+    if 'what should i reply' in low_raw or 'suggest reply' in low_raw:
+        who = ''
+        m2 = re.search(r'(?:reply\s+to|to)\s+(.+)$', cleaned, flags=re.IGNORECASE)
+        if m2:
+            who = (m2.group(1) or '').strip()
+        return _ToolResult('suggest_reply', {'to': who}, device)
+    m = re.match(r'^\s*(?:text|whatsapp)\s+(.+?)\s+(marc\s+test)\s*$', cleaned, flags=re.IGNORECASE)
+    if m:
+        pkg = 'com.whatsapp' if ('personal whatsapp' in low_raw or 'my whatsapp' in low_raw) else 'com.whatsapp.w4b'
+        args = {'to': (m.group(1) or '').strip(), 'text': (m.group(2) or '').strip(), 'package': pkg}
+        return _ToolResult('whatsapp_send', args, device)
     m = re.match(r'^\s*(?:text|whatsapp)\s+(\S+)(?:\s+(.*))?$', cleaned, flags=re.IGNORECASE)
     if m:
         to = (m.group(1) or '').strip()
         rest = (m.group(2) or '').strip() if m.group(2) is not None else ''
-        args = {'to': to, 'text': rest}
+        pkg = 'com.whatsapp' if ('personal whatsapp' in low_raw or 'my whatsapp' in low_raw) else 'com.whatsapp.w4b'
+        args = {'to': to, 'text': rest, 'package': pkg}
         return _ToolResult('whatsapp_send', args, device)
     m = re.match(r'^\s*play\b\s*(.*)$', cleaned, flags=re.IGNORECASE)
     if m:
+        if re.search(r'\b(youtube|youtu)\b', low_raw):
+            query = (m.group(1) or '').strip()
+            if re.search(r'\bfirst\b', query, flags=re.IGNORECASE) or re.search(r'\bfirst\b', low_raw):
+                return _ToolResult('youtube_play', {'mode': 'first'}, device)
+            return _ToolResult('youtube_play', {'mode': 'search', 'query': query}, device)
         if re.match(r'^\s*play\b', cleaned, flags=re.IGNORECASE):
             query = (m.group(1) or '').strip()
             args = {'query': query}
@@ -176,6 +337,28 @@ def clause_to_tool(clause):
     if m:
         if re.match(r'^\s*open\b', cleaned, flags=re.IGNORECASE):
             app = (m.group(1) or '').strip()
+            play = re.match(r'^spotify\s+(?:and\s+)?play\s+(.+)$', app, flags=re.IGNORECASE)
+            if play:
+                q = (play.group(1) or '').strip()
+                if q:
+                    return _ToolResult('play_music', {'query': q}, device)
+            if re.search(r'\bspotify\b', app, flags=re.IGNORECASE) and re.search(r'\bplay\b', app, flags=re.IGNORECASE):
+                mp = re.search(r'play\s+(.+)$', app, flags=re.IGNORECASE)
+                q = (mp.group(1) or '').strip() if mp else app
+                if q:
+                    return _ToolResult('play_music', {'query': q}, device)
+            if re.search(r'\b(instagram|insta)\b', app, flags=re.IGNORECASE) and re.search(
+                r'\b(scroll|reel|auto\s*scroll)\b', app, flags=re.IGNORECASE
+            ):
+                return _ToolResult('auto_scroll', {'direction': 'up'}, device)
+            if re.search(r'\b(youtube|youtu)\b', app, flags=re.IGNORECASE) and re.search(
+                r'\b(play|search|first)\b', app, flags=re.IGNORECASE
+            ):
+                if re.search(r'\bfirst\b', app, flags=re.IGNORECASE):
+                    return _ToolResult('youtube_play', {'mode': 'first'}, device)
+                mq = re.search(r'(?:search(?:\s+for)?|play)\s+(.+)$', app, flags=re.IGNORECASE)
+                q = (mq.group(1) or '').strip() if mq else app
+                return _ToolResult('youtube_play', {'mode': 'search', 'query': q}, device)
             args = {'app': app}
             return _ToolResult('open_app', args, device)
     m = re.match(r'^\s*type\b\s*(.*)$', cleaned, flags=re.IGNORECASE)
@@ -197,6 +380,62 @@ def split_utterance(text):
             return []
     if text.strip() == '':
         return []
+    low_all = text.lower()
+    if ("youtube" in low_all or "youtu" in low_all) and re.search(
+        r"\b(play|search|first)\b", low_all
+    ):
+        mode = "first"
+        query = ""
+        if re.search(r"\bfirst\b", low_all) and re.search(r"\b(play|video)\b", low_all):
+            mode = "first"
+        else:
+            mode = "search"
+            mq = re.search(r"(?:search(?:\s+for)?|play)\s+(.+)$", text, re.I)
+            query = (mq.group(1) or "").strip() if mq else ""
+            query = re.sub(r"\bon\s+(youtube|youtu\.?be)\s*$", "", query, flags=re.I).strip()
+        args = {"mode": mode}
+        if query:
+            args["query"] = query
+        return [{
+            "id": "s1",
+            "tool": "youtube_play",
+            "args": args,
+            "device": "phone",
+            "after": [],
+        }]
+    if (
+        ("instagram" in low_all or "insta" in low_all)
+        and "scroll" in low_all
+    ):
+        return [{
+            "id": "s1",
+            "tool": "auto_scroll",
+            "args": {"direction": "up"},
+            "device": "phone",
+            "after": [],
+        }]
+    m_wa = re.search(
+        r"open\s+whats?app.*?search\s+(\S+).*?(?:text|message)(?:\s+him|\s+her|\s+them)?\s+(.+)$",
+        text,
+        re.I | re.S,
+    )
+    if m_wa:
+        return [{
+            "id": "s1",
+            "tool": "whatsapp_send",
+            "args": {"to": m_wa.group(1).strip(" ,;.:'s"), "text": m_wa.group(2).strip()},
+            "device": "phone",
+            "after": [],
+        }]
+    m_sp = re.search(r"open\s+spotify\s+(?:and\s+)?play\s+(.+)$", text, re.I)
+    if m_sp:
+        return [{
+            "id": "s1",
+            "tool": "play_music",
+            "args": {"query": m_sp.group(1).strip()},
+            "device": "phone",
+            "after": [],
+        }]
     clauses = split_clauses(text)
     if not clauses:
         return []
@@ -260,6 +499,17 @@ def split_utterance(text):
     return steps
 
 
+def _strip_voice(text):
+    low = text if isinstance(text, str) else ''
+    low = low.lower().strip()
+    return re.sub(r'^[?.!,\s]+|[?.!,\s]+$', '', low).strip()
+
+
+def is_greeting(text):
+    stripped = _strip_voice(text)
+    return stripped in ('hi', 'hello', 'hey', 'hey marc', 'hey mark', 'hey bee')
+
+
 def classify_voice(text):
     if not isinstance(text, str):
         if text is None:
@@ -272,25 +522,10 @@ def classify_voice(text):
     low = text.lower()
     if 'reboot' in low or 'shutdown' in low or 'sudo' in low or 'poweroff' in low or 'rm -rf' in low:
         return {'kind': 'refuse'}
-    if re.search(r'\bsend\s+it\b', low):
+    stripped = _strip_voice(text)
+    if stripped in ('yes', 'yeah', 'yep', 'ok', 'okay', 'send it', 'do it', 'go ahead', 'that'):
         return {'kind': 'confirm'}
-    if re.search(r'\b(yes|yeah|yep|okay)\b', low):
-        return {'kind': 'confirm'}
-    if re.search(r'\bok\b', low):
-        return {'kind': 'confirm'}
-    if re.search(r'\bdo\s+it\b', low):
-        return {'kind': 'confirm'}
-    if re.search(r'\bgo\s+ahead\b', low):
-        return {'kind': 'confirm'}
-    try:
-        _stripped = low.strip().strip('?.!. ').strip()
-    except Exception:
-        _stripped = low.strip()
-    if _stripped == 'that':
-        return {'kind': 'confirm'}
-    if re.search(r'\b(nope|cancel|stop)\b', low):
-        return {'kind': 'cancel'}
-    if re.search(r'\bno\b', low):
+    if stripped in ('no', 'nope', 'cancel', 'stop'):
         return {'kind': 'cancel'}
     return {'kind': 'ask'}
 
@@ -447,10 +682,20 @@ def decide(kind, pending_steps=None):
     if k == 'ask':
         if not has_pending:
             return {'action': 'ack'}
-        return {'action': 'ask'}
+        try:
+            if needs_confirm(pending_steps):
+                return {'action': 'ask'}
+            return {'action': 'run'}
+        except Exception:
+            return {'action': 'ask'}
     if not has_pending:
         return {'action': 'ack'}
-    return {'action': 'ask'}
+    try:
+        if needs_confirm(pending_steps):
+            return {'action': 'ask'}
+        return {'action': 'run'}
+    except Exception:
+        return {'action': 'ask'}
 
 
 def plan_ask(text, spark_tools=None, long=False):
@@ -480,7 +725,7 @@ def plan_ask(text, spark_tools=None, long=False):
             steps = []
         if not steps:
             low = text.lower()
-            dev = 'laptop' if 'on my laptop' in low else 'phone'
+            dev = 'laptop' if ('on my laptop' in low or 'on the server' in low) else 'phone'
             m = re.match(r'^\s*type\b\s*(.*)$', text, flags=re.IGNORECASE)
             if m:
                 q = (m.group(1) or '').strip()
@@ -520,7 +765,7 @@ def dispatch(steps, run_phone, run_laptop, laptop_ok=True):
         seq = list(steps)
     except Exception:
         return results
-    for step in seq:
+    for i, step in enumerate(seq):
         if not isinstance(step, dict):
             continue
         try:
@@ -549,4 +794,28 @@ def dispatch(steps, run_phone, run_laptop, laptop_ok=True):
                 results.append({'id': sid, 'ok': False, 'error': 'laptop offline'})
         else:
             results.append(run_phone(step))
+            try:
+                tool_name = str(step.get('tool') or '').lower()
+            except Exception:
+                tool_name = ''
+            if tool_name == 'open_app' and i + 1 < len(seq):
+                nxt = seq[i + 1]
+                nt = ''
+                ndev = 'phone'
+                if isinstance(nxt, dict):
+                    try:
+                        nt = str(nxt.get('tool') or '').lower()
+                    except Exception:
+                        nt = ''
+                    try:
+                        ndev = str(nxt.get('device') or 'phone').lower()
+                    except Exception:
+                        ndev = 'phone'
+                if ndev not in ('laptop', 'server') and nt in (
+                    'click_text', 'swipe', 'scroll', 'type_into', 'press_back',
+                ):
+                    try:
+                        time.sleep(0.8)
+                    except Exception:
+                        pass
     return results

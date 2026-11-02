@@ -6,6 +6,12 @@ Persists under ``MARC_MIND_DIR`` (default ``./var/mind``)::
       ME.md
       NOW.md
       index.md
+      daily/
+        YYYY-MM-DD.md
+      failed/
+        YYYY-MM-DD.md
+      notes/
+        <slug>.md
       people/
         _template.md
       style/
@@ -316,6 +322,344 @@ def what_was_i_doing() -> str:
     return "Nothing recorded yet."
 
 
+# ---------------------------------------------------------------------------
+# Asked / failed / NOW-last / notes — markdown soul, atomic writes, stdlib only.
+# ---------------------------------------------------------------------------
+
+_SECRET_PATTERNS = (
+    "authorization",
+    "bearer",
+    "api key",
+    "api-key",
+    "api_key",
+    "apikey",
+)
+
+
+def _is_secret_line(line: str) -> bool:
+    low = str(line or "").lower()
+    for pat in _SECRET_PATTERNS:
+        if pat in low:
+            return True
+    return False
+
+
+def _sanitize_failed_field(value) -> str:
+    """Flatten to one line; strip secret lines; never leak secrets."""
+    text = "" if value is None else str(value)
+    if not text.strip():
+        return ""
+    lines = text.splitlines()
+    kept = [ln for ln in lines if not _is_secret_line(ln)]
+    if not kept:
+        return "[redacted]"
+    flat = " ".join(ln.strip() for ln in kept).strip()
+    # Keep the ' | ' bullet delimiter unambiguous.
+    flat = flat.replace("|", "/")
+    flat = re.sub(r"\s+", " ", flat).strip()
+    if not flat:
+        return "[redacted]"
+    if _is_secret_line(flat):
+        return "[redacted]"
+    return flat
+
+
+def _one_line(value) -> str:
+    text = "" if value is None else str(value)
+    flat = " ".join(text.splitlines()).strip()
+    flat = flat.replace("|", "/")
+    return re.sub(r"\s+", " ", flat).strip()
+
+
+def _today_str() -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.now().astimezone().date().isoformat()
+    except Exception:
+        from datetime import datetime as _dt
+
+        return _dt.now().date().isoformat()
+
+
+def _now_hm() -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.now().astimezone().strftime("%H:%M")
+    except Exception:
+        from datetime import datetime as _dt
+
+        return _dt.now().strftime("%H:%M")
+
+
+def _append_bullet(rel: str, bullet: str, header: str) -> Path:
+    bullet = str(bullet or "").rstrip()
+    if not bullet.endswith("\n"):
+        bullet = bullet + "\n"
+    with _LOCK:
+        path = _resolve(rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = ""
+        try:
+            if path.is_file():
+                existing = path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+        except Exception:
+            existing = ""
+        if not (existing or "").strip():
+            new_text = header + bullet
+        else:
+            if not existing.endswith("\n"):
+                existing += "\n"
+            new_text = existing + bullet
+        _atomic_write(path, new_text)
+        return Path(path)
+
+
+def _format_action(item) -> str:
+    if isinstance(item, str):
+        return re.sub(r"\s+", " ", item.strip())
+    ok = True
+    tool = ""
+    if isinstance(item, dict):
+        if "ok" in item:
+            ok = item.get("ok")
+        elif "success" in item:
+            ok = item.get("success")
+        elif "status" in item:
+            ok = item.get("status")
+        elif "result" in item:
+            ok = item.get("result")
+        else:
+            ok = True
+        for key in ("tool", "name", "action", "tool_name"):
+            if key in item and item.get(key) not in (None, ""):
+                tool = item.get(key)
+                break
+    elif isinstance(item, (list, tuple)):
+        if len(item) >= 2:
+            ok = item[0]
+            tool = item[1]
+        elif len(item) == 1:
+            tool = item[0]
+            ok = True
+        else:
+            return ""
+    else:
+        return re.sub(r"\s+", " ", str(item).strip())
+    if isinstance(ok, str):
+        low = ok.strip().lower()
+        if low in ("ok", "success", "successful", "pass", "passed", "true", "done", "1"):
+            is_ok = True
+        elif low in ("fail", "failed", "failure", "error", "false", "0"):
+            is_ok = False
+        else:
+            is_ok = bool(ok)
+    else:
+        is_ok = bool(ok)
+    tool_s = "" if tool is None else re.sub(r"\s+", " ", str(tool).replace("|", "/").strip())
+    prefix = "ok" if is_ok else "fail"
+    if tool_s:
+        return "%s %s" % (prefix, tool_s)
+    return prefix
+
+
+def _extract_field(text: str, field: str) -> str:
+    try:
+        m = re.search(r"^%s:\s*(.*)$" % re.escape(field), text or "", re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def append_asked(text, source="") -> Path:
+    """Append one bullet to ``daily/YYYY-MM-DD.md`` with time.
+
+    Format: ``- HH:MM | <text>`` plus `` | <source>`` when given.
+    Secret-looking lines are stripped, never persisted.
+    """
+    day = _today_str()
+    hm = _now_hm()
+    clean_text = _sanitize_failed_field(text)
+    clean_source = _sanitize_failed_field(source) if str(source or "").strip() else ""
+    if not clean_text:
+        clean_text = "(empty)"
+    if clean_source:
+        bullet = "- %s | %s | %s" % (hm, clean_text, clean_source)
+    else:
+        bullet = "- %s | %s" % (hm, clean_text)
+    header = "# Daily %s\n\n" % day
+    path = _append_bullet("daily/%s.md" % day, bullet, header)
+    try:
+        here = Path(__file__).resolve()
+        cand = here.parents[2] / "server" / "cognee" / "memory.py"
+        if cand.is_file():
+            import importlib.util as _ilu
+
+            spec = _ilu.spec_from_file_location("_marc_cognee_vault", str(cand))
+            if spec is not None and spec.loader is not None:
+                mod = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                remember = getattr(mod, "remember", None)
+                if callable(remember):
+                    remember(clean_text, dataset="personal")
+    except Exception:
+        pass
+    return path
+
+
+def append_failed(utterance, tool="", device="", error="") -> Path:
+    """Append one bullet to ``failed/YYYY-MM-DD.md``.
+
+    Format: ``- HH:MM | utterance | tool | device | error``.
+    NEVER persists secrets: any line containing Authorization/Bearer/
+    api-key variants is stripped (whole field -> ``[redacted]`` if needed).
+    """
+    day = _today_str()
+    hm = _now_hm()
+    u = _sanitize_failed_field(utterance)
+    t = _sanitize_failed_field(tool)
+    d = _sanitize_failed_field(device)
+    e = _sanitize_failed_field(error)
+    bullet = "- %s | %s | %s | %s | %s" % (hm, u, t, d, e)
+    header = "# Failed %s\n\n" % day
+    return _append_bullet("failed/%s.md" % day, bullet, header)
+
+
+def last_failed(n=5) -> list[str]:
+    """Return the last *n* failed bullets as strings (oldest first)."""
+    try:
+        count = int(n)
+    except Exception:
+        count = 5
+    if count <= 0:
+        return []
+    lines: list[str] = []
+    try:
+        base = _base() / "failed"
+        if base.is_dir():
+            files = sorted([p for p in base.glob("*.md") if p.is_file()])
+            for fp in files:
+                try:
+                    text = fp.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                except Exception:
+                    continue
+                for raw in (text or "").splitlines():
+                    s = raw.strip()
+                    if not s:
+                        continue
+                    if s.startswith("- "):
+                        lines.append(s)
+                    elif re.match(r"^\d{1,2}:\d{2}\s*\|", s):
+                        lines.append(s)
+    except Exception:
+        return []
+    if not lines and count:
+        # Fall back to today's file via read_md (covers odd env setups).
+        try:
+            text = read_md("failed/%s.md" % _today_str())
+        except Exception:
+            text = ""
+        for raw in (text or "").splitlines():
+            s = raw.strip()
+            if s.startswith("- "):
+                lines.append(s)
+    return lines[-count:]
+
+
+def update_now_last(actions) -> Path:
+    """Write NOW.md ``Last:`` as the last 3 actions (``ok/fail tool``)."""
+    items: list[str] = []
+    try:
+        seq = list(actions) if actions is not None else []
+    except TypeError:
+        seq = [actions]
+    for a in seq:
+        s = _format_action(a)
+        if s:
+            items.append(s)
+    last3 = items[-3:]
+    last_val = ", ".join(last3)
+    with _LOCK:
+        try:
+            path = _resolve("NOW.md")
+        except ValueError:
+            path = _base() / "NOW.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = ""
+        try:
+            if path.is_file():
+                existing = path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+        except Exception:
+            existing = ""
+        if not (existing or "").strip():
+            existing = _default_now_text()
+        out_lines: list[str] = []
+        found = False
+        for raw in existing.splitlines():
+            if not found and re.match(r"^Last:\s*", raw):
+                out_lines.append("Last: %s" % last_val)
+                found = True
+            else:
+                out_lines.append(raw)
+        if not found:
+            # Insert after '# NOW' when present, else prepend.
+            inserted = False
+            fresh: list[str] = []
+            for i, raw in enumerate(out_lines):
+                fresh.append(raw)
+                if not inserted and raw.strip() == "# NOW":
+                    fresh.append("Last: %s" % last_val)
+                    inserted = True
+            if not inserted:
+                fresh = ["# NOW", "", "Last: %s" % last_val] + fresh
+            out_lines = fresh
+        # Refresh Updated: timestamp.
+        from datetime import datetime
+
+        try:
+            updated = datetime.now().astimezone().isoformat(timespec="seconds")
+        except Exception:
+            updated = datetime.now().isoformat(timespec="seconds")
+        refreshed: list[str] = []
+        seen_updated = False
+        for raw in out_lines:
+            if re.match(r"^Updated:\s*", raw):
+                refreshed.append("Updated: %s" % updated)
+                seen_updated = True
+            else:
+                refreshed.append(raw)
+        if not seen_updated:
+            refreshed.append("Updated: %s" % updated)
+        out_lines = refreshed
+        new_text = "\n".join(out_lines).rstrip() + "\n"
+        _atomic_write(path, new_text)
+        return Path(path)
+
+
+def save_note(title, body) -> Path:
+    """Save a markdown note to ``notes/<slug>.md``. Returns the path."""
+    raw_title = "" if title is None else str(title).strip()
+    if not raw_title:
+        raw_title = "untitled"
+    slug = _safe_slug(raw_title, "untitled")
+    text_body = "" if body is None else (body if isinstance(body, str) else str(body))
+    text_body = text_body.strip()
+    if text_body:
+        text = "# %s\n\n%s\n" % (raw_title, text_body)
+    else:
+        text = "# %s\n" % raw_title
+    return write_md("notes/%s.md" % slug, text)
+
+
 __all__ = [
     "MIND_DIR",
     "mind_dir",
@@ -327,4 +671,9 @@ __all__ = [
     "upsert_style",
     "who_am_i",
     "what_was_i_doing",
+    "append_asked",
+    "append_failed",
+    "last_failed",
+    "update_now_last",
+    "save_note",
 ]

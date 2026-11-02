@@ -12,6 +12,9 @@ mind_note(title, body):
 Both return JSON-able dicts shaped for GET /mind and GET /whoami:
   mind_recall -> {ok, text, hits}
   mind_note   -> {ok, text, path, hits}
+
+inject_context(me, now, failed_lines):
+  - clamped context block for prompts; drops Authorization/secrets.
 """
 
 import datetime
@@ -64,7 +67,29 @@ def _load_module(names):
 
 
 def _load_vault():
-    return _load_module(("vault", "brain.vault", "marc-muse.vault"))
+    mod = _load_module(("vault", "brain.vault", "marc-muse.vault"))
+    if mod is not None:
+        return mod
+    # File-location fallback: sibling vault.py (hyphenated pkg dir breaks imports).
+    try:
+        import importlib.util as _ilu  # stdlib only
+
+        here = Path(__file__).resolve().parent
+        for cand in (here / "vault.py", here.parent.parent / "vault.py"):
+            try:
+                if cand.is_file():
+                    spec = _ilu.spec_from_file_location(
+                        "_marc_muse_vault_fallback", str(cand)
+                    )
+                    if spec is not None and spec.loader is not None:
+                        m = _ilu.module_from_spec(spec)
+                        spec.loader.exec_module(m)  # type: ignore[union-attr]
+                        return m
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
 
 
 def _load_index():
@@ -343,6 +368,90 @@ def _index_search_text(query, limit=5):
     return _fallback_search(query, limit=limit)
 
 
+def _load_cognee_memory():
+    """Optional Cognee wrapper. Never raises; markdown remains the fallback."""
+    try:
+        import importlib.util as _ilu
+
+        here = Path(__file__).resolve()
+        cand = here.parents[2] / "server" / "cognee" / "memory.py"
+        if not cand.is_file():
+            return None
+        spec = _ilu.spec_from_file_location("_marc_cognee_memory", str(cand))
+        if spec is None or spec.loader is None:
+            return None
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+def _active_dataset():
+    try:
+        now = _safe_read(_mind_dir() / "NOW.md")
+        m = re.search(r"^Project:\s*(\S+)", now or "", re.I | re.M)
+        if m:
+            slug = re.sub(r"[^a-z0-9_\-]+", "", m.group(1).strip().lower())
+            if slug:
+                return "project_" + slug
+    except Exception:
+        pass
+    return "personal"
+
+
+def _cognee_remember(text, dataset="personal"):
+    mod = _load_cognee_memory()
+    if mod is None:
+        return
+    fn = getattr(mod, "remember", None)
+    if not callable(fn):
+        return
+    try:
+        fn(text, dataset=dataset)
+    except TypeError:
+        try:
+            fn(text, dataset)
+        except Exception:
+            return
+    except Exception:
+        return
+
+
+def _cognee_recall(query, dataset="personal"):
+    mod = _load_cognee_memory()
+    if mod is None:
+        return "", []
+    fn = getattr(mod, "recall", None)
+    if not callable(fn):
+        return "", []
+    try:
+        res = fn(query, datasets=[dataset])
+    except TypeError:
+        try:
+            res = fn(query, [dataset])
+        except Exception:
+            return "", []
+    except Exception:
+        return "", []
+    if not isinstance(res, dict):
+        return "", []
+    text = str(res.get("text") or "")
+    hits = res.get("hits") or []
+    if not isinstance(hits, list):
+        hits = []
+    return text, hits
+
+
+def _merge_cognee(query, text, hits, dataset=None):
+    extra, extra_hits = _cognee_recall(query, dataset or _active_dataset())
+    if extra and extra.strip() and extra.strip() not in (text or ""):
+        text = (text or "") + "\n\n---\n\n" + extra.strip()
+    if extra_hits:
+        hits = list(hits or []) + list(extra_hits)
+    return text, hits
+
+
 def mind_recall(query=""):
     """Recall markdown for a query -> {ok, text, hits}."""
     q = query if isinstance(query, str) else str(query or "")
@@ -358,21 +467,232 @@ def mind_recall(query=""):
         if wants_who and wants_doing:
             t1, h1 = _who_am_i_text()
             t2, h2 = _what_was_i_doing_text()
-            return {"ok": True, "text": t1 + "\n\n---\n\n" + t2, "hits": list(h1) + list(h2)}
-        if wants_who:
+            text, hits = t1 + "\n\n---\n\n" + t2, list(h1) + list(h2)
+        elif wants_who:
             text, hits = _who_am_i_text()
-            return {"ok": True, "text": text, "hits": hits}
-        if wants_doing:
+        elif wants_doing:
             text, hits = _what_was_i_doing_text()
-            return {"ok": True, "text": text, "hits": hits}
-        if not q.strip():
+        elif not q.strip():
             t1, h1 = _who_am_i_text()
             t2, h2 = _what_was_i_doing_text(limit=3)
-            return {"ok": True, "text": t1 + "\n\n---\n\n" + t2, "hits": list(h1) + list(h2)}
-        text, hits = _index_search_text(q)
+            text, hits = t1 + "\n\n---\n\n" + t2, list(h1) + list(h2)
+        else:
+            text, hits = _index_search_text(q)
+        if not wants_who:
+            try:
+                text, hits = _merge_cognee(q or "now", text, hits)
+            except Exception:
+                pass
         return {"ok": True, "text": text, "hits": hits}
     except Exception as exc:
         return {"ok": False, "text": "recall error: %s" % exc, "hits": []}
+
+
+# ------------------------------------------------- secrets + context ---
+
+_AUTH_LINE_RE = re.compile(r"(?im)^[^\n]*authorization[^\n]*$")
+_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-~+/=]+")
+_TOKEN_VAL_RE = re.compile(r"(?i)(token\s*[:=]\s*)([A-Za-z0-9._\-~+/=]{8,})")
+
+
+def _redact_secrets(text):
+    """Drop Authorization material; redact bearer/token values. No logging."""
+    try:
+        s = text if isinstance(text, str) else str(text or "")
+    except Exception:
+        return ""
+    try:
+        # Drop whole lines mentioning authorization (headers, curl flags, etc).
+        s = _AUTH_LINE_RE.sub("[redacted]", s)
+        s = _BEARER_RE.sub("Bearer [redacted]", s)
+        s = _TOKEN_VAL_RE.sub(lambda m: m.group(1) + "[redacted]", s)
+        # Final sweep: ensure the word itself cannot leak a header value.
+        # Keep it simple: remove case-insensitive "authorization" token.
+        s = re.sub(r"(?i)authorization", "[redacted]", s)
+    except Exception:
+        pass
+    return s
+
+
+def _clamp(text, limit):
+    try:
+        s = text if isinstance(text, str) else str(text or "")
+    except Exception:
+        s = ""
+    try:
+        n = int(limit)
+    except Exception:
+        n = 1000
+    if n <= 0:
+        return ""
+    s = s.strip()
+    if len(s) > n:
+        return s[: max(0, n - 12)].rstrip() + "…[truncated]"
+    return s
+
+
+def inject_context(me="", now="", failed_lines=None, max_chars=4000):
+    """Build a clamped context block for prompts.
+
+    Args:
+      me: who-am-i markdown/text.
+      now: NOW markdown/text.
+      failed_lines: list of failure strings (or single string).
+      max_chars: total clamp (default 4000).
+
+    Drops Authorization/secrets and clamps each section so prompts stay
+    bounded. Stdlib only; never logs secrets. Returns a string.
+    """
+    try:
+        limit_total = int(max_chars)
+    except Exception:
+        limit_total = 4000
+    if limit_total <= 0:
+        limit_total = 4000
+    limit_total = max(256, min(limit_total, 12000))
+
+    try:
+        me_s = me if isinstance(me, str) else str(me or "")
+    except Exception:
+        me_s = ""
+    try:
+        now_s = now if isinstance(now, str) else str(now or "")
+    except Exception:
+        now_s = ""
+
+    if failed_lines is None:
+        fails = []
+    elif isinstance(failed_lines, str):
+        fails = failed_lines.splitlines()
+    elif isinstance(failed_lines, (list, tuple)):
+        fails = []
+        for item in failed_lines:
+            try:
+                if isinstance(item, str):
+                    # Split embedded newlines so one entry cannot blow the clamp.
+                    fails.extend(item.splitlines())
+                elif item is None:
+                    continue
+                else:
+                    fails.extend(str(item).splitlines())
+            except Exception:
+                continue
+    else:
+        try:
+            fails = str(failed_lines).splitlines()
+        except Exception:
+            fails = []
+
+    # Redact secrets before clamping so redaction cannot be cut off.
+    me_s = _redact_secrets(me_s)
+    now_s = _redact_secrets(now_s)
+    clean_fails = []
+    for line in fails:
+        try:
+            s = _redact_secrets(line).strip()
+        except Exception:
+            continue
+        if not s:
+            continue
+        clean_fails.append(s)
+
+    # Clamp sections: me/now bounded, failures bounded in count + width.
+    me_s = _clamp(me_s, 1000)
+    now_s = _clamp(now_s, 1000)
+    max_failed = 8
+    fail_width = 300
+    trimmed = []
+    for ln in clean_fails[:max_failed]:
+        one = re.sub(r"\s+", " ", ln).strip()
+        if len(one) > fail_width:
+            one = one[: fail_width - 12].rstrip() + "…[truncated]"
+        trimmed.append(one)
+
+    parts = ["# Context", ""]
+    if me_s:
+        parts.append("## Me")
+        parts.append("")
+        parts.append(me_s)
+        parts.append("")
+    if now_s:
+        parts.append("## Now")
+        parts.append("")
+        parts.append(now_s)
+        parts.append("")
+    if trimmed:
+        parts.append("## Failed")
+        parts.append("")
+        for ln in trimmed:
+            parts.append("- %s" % ln)
+        parts.append("")
+    out = "\n".join(parts).strip() + "\n"
+    # Final safety: no Authorization substring may survive.
+    out = re.sub(r"(?i)authorization", "[redacted]", out)
+    out = _BEARER_RE.sub("Bearer [redacted]", out)
+    if len(out) > limit_total:
+        out = out[: max(0, limit_total - 12)].rstrip() + "…[truncated]\n"
+    return out
+
+
+def _vault_save_note(vault, title, body, rel, combined_text):
+    """Call vault.save_note (preferred) or vault.write_md. Returns True if called."""
+    # Preferred: save_note(title, body) — the persistent soul hook.
+    for attr in ("save_note", "add_note", "write_note", "note"):
+        try:
+            fn = getattr(vault, attr, None)
+        except Exception:
+            fn = None
+        if callable(fn):
+            try:
+                fn(title, body)
+                return True
+            except TypeError:
+                try:
+                    fn({"title": title, "body": body})
+                    return True
+                except Exception:
+                    continue
+            except Exception:
+                # Vault hook must never break local persistence.
+                return True
+    # Fallback: write_md(rel, text) — same soul, markdown file.
+    try:
+        fn = getattr(vault, "write_md", None)
+    except Exception:
+        fn = None
+    if callable(fn):
+        try:
+            # Prefer read-modify-write so write_md (overwrite) appends.
+            existing = ""
+            try:
+                rfn = getattr(vault, "read_md", None)
+                if callable(rfn):
+                    existing = rfn(rel) or ""
+            except Exception:
+                existing = ""
+            text_to_write = combined_text
+            if existing and combined_text:
+                # combined_text already includes existing when we built it
+                # from local disk; if vault disk differs, merge vault side.
+                try:
+                    if combined_text.strip() not in (existing or ""):
+                        sep = "" if (existing or "").endswith("\n") else "\n"
+                        text_to_write = (existing or "") + sep + combined_text
+                    else:
+                        text_to_write = existing
+                except Exception:
+                    text_to_write = combined_text
+            try:
+                fn(rel, text_to_write)
+            except TypeError:
+                try:
+                    fn({"path": rel, "text": text_to_write})
+                except Exception:
+                    return False
+            return True
+        except Exception:
+            return False
+    return False
 
 
 def mind_note(title="", body="", text="", **kw):
@@ -380,6 +700,8 @@ def mind_note(title="", body="", text="", **kw):
 
     Accepts mind_note(title, body), mind_note(text=...), or
     mind_note({"text": ...}) shapes from the planner.
+    Persists via vault.save_note (or vault.write_md) plus a local
+    markdown append so notes actually persist. Never logs secrets.
     """
     if isinstance(title, dict) and not body and not text:
         kw_text = title.get("text", title.get("body", ""))
@@ -404,26 +726,13 @@ def mind_note(title="", body="", text="", **kw):
     if not body:
         body = title
 
-    # Optional vault hook — never fatal.
-    try:
-        vault = _load_vault()
-        if vault is not None:
-            for attr in ("save_note", "add_note", "write_note", "note"):
-                fn = getattr(vault, attr, None)
-                if callable(fn):
-                    try:
-                        fn(title, body)
-                        break
-                    except TypeError:
-                        try:
-                            fn({"title": title, "body": body})
-                            break
-                        except Exception:
-                            continue
-                    except Exception:
-                        break
-    except Exception:
-        pass
+    # Redact secrets before persisting (never log secrets).
+    title = _redact_secrets(title)
+    body = _redact_secrets(body)
+    if not title.strip():
+        title = "note"
+    if not body.strip():
+        body = title
 
     low_t = title.lower()
     low_b = body.lower()
@@ -436,6 +745,51 @@ def mind_note(title="", body="", text="", **kw):
         or "project:" in low_t
     )
     mind = _mind_dir()
+    # Pre-compute rel + entry so vault.write_md can persist the same soul.
+    if is_project:
+        clean = re.sub(r"^(project\s*[:/\-]\s*|\[project\]\s*)", "", title, flags=re.I).strip() or "note"
+        slug = _slug(clean)
+        rel = "projects/%s.md" % slug
+        path = mind / "projects" / ("%s.md" % slug)
+        entry = "# %s\n\n%s\n" % (clean, body)
+    else:
+        day = datetime.date.today().isoformat()
+        rel = "daily/%s.md" % day
+        path = mind / "daily" / ("%s.md" % day)
+        now = datetime.datetime.now().strftime("%H:%M")
+        entry = "## %s %s\n\n%s\n" % (now, title, body)
+
+    # MUST call vault.save_note (or write_md) so notes actually persist.
+    # Build combined text for write_md-style vaults (overwrite semantic).
+    combined_for_vault = entry
+    try:
+        existing_local = _safe_read(path)
+        if existing_local.strip():
+            if is_project:
+                combined_for_vault = existing_local.rstrip() + "\n\n---\n\n" + entry
+            else:
+                if existing_local.startswith("#"):
+                    combined_for_vault = existing_local.rstrip() + "\n\n" + entry
+                else:
+                    day = datetime.date.today().isoformat()
+                    combined_for_vault = "# %s\n\n" % day + existing_local.rstrip() + "\n\n" + entry
+        else:
+            if not is_project and not entry.startswith("# "):
+                day = datetime.date.today().isoformat()
+                # entry already has day header only when file is new; keep as built below.
+                pass
+    except Exception:
+        combined_for_vault = entry
+    try:
+        vault = _load_vault()
+        if vault is not None:
+            try:
+                _vault_save_note(vault, title, body, rel, combined_for_vault)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     try:
         if is_project:
             clean = re.sub(r"^(project\s*[:/\-]\s*|\[project\]\s*)", "", title, flags=re.I).strip() or "note"
@@ -445,7 +799,14 @@ def mind_note(title="", body="", text="", **kw):
             entry = "# %s\n\n%s\n" % (clean, body)
             if path.is_file():
                 existing = _safe_read(path)
-                path.write_text(existing.rstrip() + "\n\n---\n\n" + entry, encoding="utf-8")
+                # Avoid double-append when vault already persisted to same dir.
+                try:
+                    if body.strip() and body.strip() in (existing or ""):
+                        pass
+                    else:
+                        path.write_text(existing.rstrip() + "\n\n---\n\n" + entry, encoding="utf-8")
+                except Exception:
+                    path.write_text(existing.rstrip() + "\n\n---\n\n" + entry, encoding="utf-8")
             else:
                 path.write_text(entry, encoding="utf-8")
         else:
@@ -456,7 +817,13 @@ def mind_note(title="", body="", text="", **kw):
             entry = "## %s %s\n\n%s\n" % (now, title, body)
             if path.is_file():
                 existing = _safe_read(path)
-                path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
+                try:
+                    if body.strip() and body.strip() in (existing or ""):
+                        pass
+                    else:
+                        path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
+                except Exception:
+                    path.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
             else:
                 path.write_text("# %s\n\n%s" % (day, entry), encoding="utf-8")
         try:
@@ -479,4 +846,4 @@ def who_am_i():
     return {"ok": True, "text": text, "hits": hits}
 
 
-__all__ = ["mind_recall", "mind_note", "who_am_i"]
+__all__ = ["mind_recall", "mind_note", "who_am_i", "inject_context", "_cognee_remember"]

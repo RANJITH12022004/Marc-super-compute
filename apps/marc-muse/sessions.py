@@ -274,6 +274,16 @@ def append_daily(line: str, source: str = "") -> Path:
         return path
 
 
+def append_failed(utterance: str, tool: str = "", device: str = "", error: str = "") -> Path:
+    """Append a miss to ``failed/YYYY-MM-DD.md`` via the vault."""
+    try:
+        from brain import vault as _vault
+
+        return _vault.append_failed(utterance, tool=tool, device=device, error=error)
+    except Exception:
+        return append_daily("failed %s %s" % (tool, error), source=device or "phone")
+
+
 # ------------------------------------------------------------ sessions ---
 
 _SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -484,6 +494,7 @@ __all__ = [
     "get_now",
     "now_speak",
     "append_daily",
+    "append_failed",
     "safe_session_id",
     "session_path",
     "save_session",

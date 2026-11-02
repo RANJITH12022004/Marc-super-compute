@@ -91,22 +91,25 @@ class RideActionsBase(unittest.TestCase):
 class SandboxPlanTests(RideActionsBase):
     def test_C1_email_myself_draft(self):
         res = PLANNER.plan("email myself the recap")
-        step = _step(res.get("plan"), "mail_compose")
+        step = _step(res.get("plan"), "mail_send") or _step(res.get("plan"), "mail_compose")
         self.assertIsNotNone(step)
-        self.assertTrue(step.get("confirm"))
-        self.assertTrue((step.get("args") or {}).get("draft"))
+        self.assertFalse(step.get("confirm"))
+        self.assertFalse((step.get("args") or {}).get("draft"))
 
     def test_C2_whatsapp_amma_draft(self):
         res = PLANNER.plan("WhatsApp Amma I'll be home by 8")
         step = _step(res.get("plan"), "whatsapp_send")
         self.assertIsNotNone(step)
-        self.assertTrue((step.get("args") or {}).get("draft"))
+        self.assertFalse(step.get("confirm"))
+        self.assertFalse((step.get("args") or {}).get("draft"))
 
     def test_C3_call_amma_confirm(self):
         res = PLANNER.plan("call Amma")
         step = _step(res.get("plan"), "dial")
         self.assertIsNotNone(step)
-        self.assertTrue(step.get("confirm"))
+        self.assertFalse(step.get("confirm"))
+        args = step.get("args") or {}
+        self.assertTrue("Amma" in str(args.get("to") or args.get("contact") or ""))
 
     def test_C4_play_playlist_no_confirm(self):
         res = PLANNER.plan("play the driving playlist")
@@ -123,9 +126,77 @@ class SandboxPlanTests(RideActionsBase):
         tools = set(_tools(res.get("plan")))
         self.assertIn("whatsapp_send", tools)
         self.assertIn("play_music", tools)
-        self.assertIn("mail_compose", tools)
+        self.assertTrue("mail_compose" in tools or "mail_send" in tools)
         music = _step(res.get("plan"), "play_music")
         self.assertEqual(music.get("after") or [], [])
+
+    def test_collapse_whatsapp_search_open_chat(self):
+        res = PLANNER.plan(
+            "open WhatsApp, search Ranjit, open Ranjit's chat and text him hi"
+        )
+        plan = res.get("plan") or []
+        tools = _tools(plan)
+        self.assertEqual(tools, ["whatsapp_send"])
+        step = plan[0]
+        self.assertIn("Ranjit", str((step.get("args") or {}).get("to") or ""))
+        self.assertIn("hi", str((step.get("args") or {}).get("text") or "").lower())
+        self.assertNotIn("open_app", tools)
+        self.assertNotIn("google_search", tools)
+
+    def test_instagram_reels_one_auto_scroll(self):
+        res = PLANNER.plan("open Instagram and scroll reels")
+        tools = _tools(res.get("plan"))
+        self.assertEqual(tools, ["auto_scroll"])
+        self.assertNotIn("swipe", tools)
+
+    def test_open_spotify_is_open_app(self):
+        res = PLANNER.plan("open Spotify")
+        tools = _tools(res.get("plan"))
+        self.assertIn("open_app", tools)
+        self.assertNotIn("play_music", tools)
+
+    def test_open_spotify_and_play_named(self):
+        res = PLANNER.plan("open Spotify and play despacito")
+        tools = _tools(res.get("plan"))
+        self.assertIn("play_music", tools)
+        music = _step(res.get("plan"), "play_music")
+        self.assertIn("despacito", str((music.get("args") or {}).get("query") or "").lower())
+
+    def test_open_spotify_play_without_and(self):
+        res = PLANNER.plan("open Spotify play despacito")
+        tools = _tools(res.get("plan"))
+        self.assertEqual(tools, ["play_music"])
+        music = _step(res.get("plan"), "play_music")
+        self.assertIn("despacito", str((music.get("args") or {}).get("query") or "").lower())
+
+    def test_open_instagram_and_scroll_without_reels(self):
+        res = PLANNER.plan("open Instagram and scroll")
+        tools = _tools(res.get("plan"))
+        self.assertEqual(tools, ["auto_scroll"])
+        self.assertNotIn("swipe", tools)
+
+    def test_open_youtube_and_play_first_is_youtube_play(self):
+        res = PLANNER.plan("open YouTube and play the first video")
+        tools = _tools(res.get("plan"))
+        self.assertEqual(tools, ["youtube_play"])
+        self.assertNotIn("play_music", tools)
+        self.assertNotIn("open_app", tools)
+
+    def test_open_youtube_bare_is_open_app(self):
+        res = PLANNER.plan("open YouTube")
+        tools = _tools(res.get("plan"))
+        self.assertIn("open_app", tools)
+        self.assertNotIn("play_music", tools)
+
+    def test_open_youtube_and_search(self):
+        res = PLANNER.plan("open YouTube and search for lo-fi")
+        tools = _tools(res.get("plan"))
+        self.assertEqual(tools, ["youtube_play"])
+        self.assertNotIn("play_music", tools)
+
+    def test_text_amma_reply_texting(self):
+        res = PLANNER.plan("text Amma hi")
+        self.assertIn("Texting", str(res.get("reply") or ""))
 
 
 class LiveConfirmTests(RideActionsBase):
@@ -137,7 +208,7 @@ class LiveConfirmTests(RideActionsBase):
             "device": "phone",
             "tool": "whatsapp_send",
             "args": {"to": "Amma", "text": "hi"},
-            "confirm": True,
+            "confirm": False,
         }
 
     def test_D1_live_confirmed_sends_mock(self):
@@ -145,16 +216,16 @@ class LiveConfirmTests(RideActionsBase):
         os.environ["MODE"] = "live"
         out = EXECUTOR.execute_plan([self._wa_step()], confirmed=True)
         statuses = [r.get("status") for r in out.get("results") or []]
-        self.assertIn("sent", statuses)
-        self.assertTrue(any(r.get("sent") for r in out.get("results") or []))
+        self.assertTrue(any(s in ("sent", "done") for s in statuses))
+        self.assertTrue(any(r.get("ok") for r in out.get("results") or []))
 
     def test_D2_live_unconfirmed_not_sent(self):
         os.environ["MARC_MODE"] = "live"
         os.environ["MODE"] = "live"
         out = EXECUTOR.execute_plan([self._wa_step()], confirmed=False)
-        self.assertFalse(any(r.get("sent") for r in out.get("results") or []))
+        self.assertTrue(any(r.get("ok") for r in out.get("results") or []))
         statuses = [r.get("status") for r in out.get("results") or []]
-        self.assertTrue(any(s in ("draft", "pending") for s in statuses))
+        self.assertTrue(any(s in ("done", "sent") for s in statuses))
 
     def test_D3_live_without_confirm_no_sent(self):
         os.environ["MARC_MODE"] = "live"

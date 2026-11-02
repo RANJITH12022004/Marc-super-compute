@@ -19,7 +19,15 @@ import re
 import sqlite3
 from pathlib import Path
 
-__all__ = ["rebuild", "search", "get_db_path"]
+__all__ = [
+    "rebuild",
+    "search",
+    "get_db_path",
+    "ensure_schema",
+    "upsert_person",
+    "upsert_message",
+    "record_job",
+]
 
 DB_REL = Path("index") / "mind.sqlite"
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -37,6 +45,46 @@ CREATE TABLE IF NOT EXISTS chunks (
 _SCHEMA_FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
 USING fts5(path, heading, text, tokens, tokenize='porter');
+"""
+
+_SCHEMA_PEOPLE = """
+CREATE TABLE IF NOT EXISTS people (
+    slug TEXT PRIMARY KEY,
+    display TEXT NOT NULL DEFAULT '',
+    channels TEXT NOT NULL DEFAULT '[]'
+);
+"""
+
+_SCHEMA_THREADS = """
+CREATE TABLE IF NOT EXISTS threads (
+    id INTEGER PRIMARY KEY,
+    channel TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    person_slug TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL DEFAULT 0,
+    UNIQUE(channel, external_id)
+);
+"""
+
+_SCHEMA_MESSAGES = """
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY,
+    thread_id INTEGER NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'in',
+    body TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    ts REAL NOT NULL DEFAULT 0
+);
+"""
+
+_SCHEMA_JOBS = """
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    path TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL DEFAULT 0
+);
 """
 
 
@@ -81,10 +129,134 @@ def _init_db(con: sqlite3.Connection) -> None:
         con.execute(_SCHEMA_FTS)
     except sqlite3.OperationalError:
         pass
+    con.execute(_SCHEMA_PEOPLE)
+    con.execute(_SCHEMA_THREADS)
+    con.execute(_SCHEMA_MESSAGES)
+    con.execute(_SCHEMA_JOBS)
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path)"
     )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id)"
+    )
     con.commit()
+
+
+def ensure_schema(mind_dir: str | Path | None = None) -> Path:
+    """Create/migrate mind.sqlite tables. Returns db path."""
+    db_path = get_db_path(mind_dir)
+    con = _connect(db_path)
+    try:
+        _init_db(con)
+    finally:
+        con.close()
+    return db_path
+
+
+def upsert_person(
+    slug: str,
+    display: str = "",
+    channels=None,
+    mind_dir: str | Path | None = None,
+) -> None:
+    import json as _json
+    import time as _time
+
+    s = (slug or "").strip().lower()
+    if not s:
+        return
+    ch = channels if channels is not None else []
+    try:
+        ch_json = _json.dumps(list(ch))
+    except Exception:
+        ch_json = "[]"
+    con = _connect(get_db_path(mind_dir))
+    try:
+        _init_db(con)
+        con.execute(
+            "INSERT INTO people(slug, display, channels) VALUES(?,?,?) "
+            "ON CONFLICT(slug) DO UPDATE SET display=excluded.display, "
+            "channels=excluded.channels",
+            (s, display or s, ch_json),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def upsert_message(
+    channel: str,
+    external_id: str,
+    person_slug: str = "",
+    direction: str = "in",
+    body: str = "",
+    message_id: str = "",
+    mind_dir: str | Path | None = None,
+) -> int:
+    """Insert inbound/outbound message; returns thread_id."""
+    import time as _time
+
+    chan = (channel or "unknown").strip().lower() or "unknown"
+    ext = (external_id or person_slug or "unknown").strip() or "unknown"
+    slug = (person_slug or "").strip().lower()
+    now = _time.time()
+    con = _connect(get_db_path(mind_dir))
+    try:
+        _init_db(con)
+        if slug:
+            con.execute(
+                "INSERT INTO people(slug, display, channels) VALUES(?,?,?) "
+                "ON CONFLICT(slug) DO NOTHING",
+                (slug, slug, "[]"),
+            )
+        con.execute(
+            "INSERT INTO threads(channel, external_id, person_slug, updated_at) "
+            "VALUES(?,?,?,?) "
+            "ON CONFLICT(channel, external_id) DO UPDATE SET "
+            "person_slug=excluded.person_slug, updated_at=excluded.updated_at",
+            (chan, ext, slug, now),
+        )
+        row = con.execute(
+            "SELECT id FROM threads WHERE channel=? AND external_id=?",
+            (chan, ext),
+        ).fetchone()
+        tid = int(row["id"]) if row else 0
+        if tid:
+            con.execute(
+                "INSERT INTO messages(thread_id, direction, body, external_id, ts) "
+                "VALUES(?,?,?,?,?)",
+                (tid, direction or "in", body or "", message_id or "", now),
+            )
+        con.commit()
+        return tid
+    finally:
+        con.close()
+
+
+def record_job(
+    job_id: str,
+    kind: str,
+    status: str = "queued",
+    path: str = "",
+    mind_dir: str | Path | None = None,
+) -> None:
+    import time as _time
+
+    jid = (job_id or "").strip()
+    if not jid:
+        return
+    con = _connect(get_db_path(mind_dir))
+    try:
+        _init_db(con)
+        con.execute(
+            "INSERT INTO jobs(id, kind, status, path, updated_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
+            "path=excluded.path, updated_at=excluded.updated_at",
+            (jid, kind or "job", status or "queued", path or "", _time.time()),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _has_fts(con: sqlite3.Connection) -> bool:

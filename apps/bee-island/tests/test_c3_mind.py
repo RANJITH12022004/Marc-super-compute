@@ -52,6 +52,36 @@ class C3MindTests(unittest.TestCase):
         self.assertNotIn("Authorization", result)
         self.assertNotIn("Bearer sk-", result)
 
+    def test_inject_context_includes_failed(self):
+        me = ME_FIXTURE
+        now = "Working on bee tests"
+        fake = "fake-failed-line-xyz-987"
+        result = bee_mind.inject_context(me, now, failed_text=fake)
+        self.assertTrue(isinstance(result, str))
+        self.assertIn(fake, result)
+        # list form
+        result_list = bee_mind.inject_context(me, now, failed_lines=[fake])
+        self.assertIn(fake, result_list)
+        # cache-dict form
+        result_cache = bee_mind.inject_context(
+            me, now, {"FAILED.md": fake})
+        self.assertIn(fake, result_cache)
+        # last-5 window: oldest lines dropped
+        many = "\n".join("fail-line-%d" % i for i in range(7))
+        result_many = bee_mind.inject_context(me, now, failed_text=many)
+        self.assertIn("fail-line-6", result_many)
+        self.assertNotIn("fail-line-0", result_many)
+        self.assertNotIn("fail-line-1", result_many)
+        # secrets still stripped from failed, clamp holds
+        result_sec = bee_mind.inject_context(
+            me, now,
+            failed_text="Authorization: Bearer sk-fail999\n" + fake)
+        self.assertIn(fake, result_sec)
+        self.assertNotIn("Authorization", result_sec)
+        self.assertLessEqual(len(result_sec), 800)
+        # failed appears after ME+NOW
+        self.assertLess(result.find("Ranjith"), result.find(fake))
+
     def test_payload_no_auth_and_redact(self):
         payload = muse_tools.build_complete_payload(muse_tools.SPARK, "hello")
         self.assertTrue(isinstance(payload, dict))

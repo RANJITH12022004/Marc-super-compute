@@ -18,7 +18,27 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 _FALLBACK_SEND_TOOLS = {
+    "instagram_send",
+    "sms_send",
+}
+
+_PHONE_MOUTH_TOOLS = {
+    "whatsapp_send",
     "dial",
+    "mail_compose",
+    "mail_send",
+    "auto_scroll",
+    "play_music",
+    "notifications_list",
+    "suggest_reply",
+    "chat_touch",
+}
+
+_PROJECT_TOOLS = {
+    "project_list",
+    "project_use",
+    "project_run",
+    "project_stop",
 }
 
 # Google-backed tools wired on /run. Reads work in any mode via
@@ -429,6 +449,48 @@ def _enqueue_draft(session_id, step, mind_dir):
     return _save_draft_local(mind_dir, step_id, session_id, step)
 
 
+def _run_hermes(sid, tool, args):
+    """Call loopback Hermes client if present; else offline."""
+    args = dict(args or {})
+    try:
+        import importlib.util as _ilu
+
+        here = Path(__file__).resolve().parent
+        cand = here.parent / "server" / "hermes" / "client.py"
+        if not cand.is_file():
+            return {"id": sid, "ok": False, "error": "hermes offline",
+                    "output": "hermes offline", "status": "offline", "tool": tool}
+        spec = _ilu.spec_from_file_location("_marc_hermes_client", str(cand))
+        if spec is None or spec.loader is None:
+            return {"id": sid, "ok": False, "error": "hermes offline",
+                    "output": "hermes offline", "status": "offline", "tool": tool}
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fn = getattr(mod, tool, None)
+        if not callable(fn):
+            return {"id": sid, "ok": False, "error": "hermes offline",
+                    "output": "hermes offline", "status": "offline", "tool": tool}
+        if tool == "project_use":
+            raw = fn(args.get("slug") or args.get("project") or "")
+        elif tool == "project_run":
+            raw = fn(args.get("goal") or args.get("text") or "")
+        elif tool == "project_list":
+            raw = fn()
+        else:
+            raw = fn()
+        if isinstance(raw, dict):
+            raw.setdefault("id", sid)
+            raw.setdefault("tool", tool)
+            raw.setdefault("ok", True)
+            return raw
+        return {"id": sid, "ok": True, "output": str(raw), "status": "done",
+                "tool": tool}
+    except Exception as exc:
+        return {"id": sid, "ok": False, "error": "hermes offline",
+                "output": "hermes offline: %s" % exc, "status": "offline",
+                "tool": tool}
+
+
 def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
               confirmed=False):
     sid = step.get("id") or "s1"
@@ -451,8 +513,29 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
         except Exception:
             laptop_url = ""
         if not laptop_url:
-            return {"id": sid, "ok": True, "output": "laptop offline",
-                    "status": "offline", "tool": tool}
+            return {"id": sid, "ok": False, "error": "laptop offline",
+                    "output": "laptop offline", "status": "offline", "tool": tool}
+        try:
+            import urllib.request as _req
+
+            payload = json.dumps({"step": step, "session_id": session_id}).encode("utf-8")
+            req = _req.Request(
+                laptop_url.rstrip("/") + "/run",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _req.urlopen(req, timeout=12) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            data = json.loads(body) if body else {}
+            if isinstance(data, dict):
+                data.setdefault("id", sid)
+                data.setdefault("tool", tool)
+                return data
+        except Exception as exc:
+            return {"id": sid, "ok": False, "error": "laptop offline",
+                    "output": "laptop offline: %s" % exc, "status": "offline",
+                    "tool": tool}
 
     # Live + confirmed send tools: mocked send, never real HTTP, no draft.
     # Skip google connector networking entirely for sends here.
@@ -461,11 +544,60 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
                 "output": "sent %s (mock)" % tool,
                 "status": "sent", "tool": tool, "sent": True}
 
-    # play_music always completes even if other steps are pending/draft.
-    if tool == "play_music":
-        out = "Playing '%s' (simulated)." % (args.get("query") or "")
+    # Phone mouth tools run immediately — the device is the sender.
+    if tool in _PHONE_MOUTH_TOOLS:
+        if tool in ("suggest_reply", "chat_touch"):
+            who = args.get("to") or args.get("who") or args.get("person") or "friend"
+            intent = (
+                args.get("topic")
+                or args.get("intent")
+                or args.get("text")
+                or "reply"
+            )
+            channel = str(args.get("channel") or "whatsapp").strip().lower() or "whatsapp"
+            draft = ""
+            card_ok = False
+            try:
+                import style as _style  # type: ignore
+                if hasattr(_style, "load_card"):
+                    try:
+                        card_ok = bool(_style.load_card(str(who), channel))
+                    except Exception:
+                        card_ok = False
+                draft = _style.draft_like_me(str(who), channel, str(intent)) or ""
+            except Exception:
+                draft = ""
+            if tool == "chat_touch" and not card_ok and not draft:
+                out = "Need a WhatsApp export for %s first." % who
+                return {"id": sid, "ok": False, "output": out, "spoken": out,
+                        "status": "need_export", "tool": tool, "sent": False}
+            if not draft:
+                draft = "Got it — thanks!"
+            out = "Suggested reply: %s" % draft.strip()
+            return {
+                "id": sid,
+                "ok": True,
+                "output": out,
+                "spoken": out,
+                "status": "done",
+                "tool": tool,
+                "sent": False,
+                "draft": draft.strip(),
+                "to": who,
+                "topic": intent,
+                "package": args.get("package") or "com.whatsapp.w4b",
+            }
+        if tool == "notifications_list":
+            out = "Ask the phone for the notification tray summary."
+            return {"id": sid, "ok": True, "output": out, "spoken": out,
+                    "status": "done", "tool": tool, "sent": False}
+        label = args.get("to") or args.get("contact") or args.get("query") or ""
+        out = "%s queued for phone%s." % (tool, (" (%s)" % label) if label else "")
         return {"id": sid, "ok": True, "output": out, "status": "done",
-                "tool": tool}
+                "tool": tool, "sent": False}
+
+    if tool in _PROJECT_TOOLS:
+        return _run_hermes(sid, tool, args)
 
     needs_draft = bool(is_send or args.get("draft") is True or (sandbox and (confirm or tool in confirm_tools)))
     if tool in _GOOGLE_TOOLS and not needs_draft:
@@ -513,8 +645,8 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
                 "tool": tool, "draft": True, "sent": False}
     # Sandbox-safe simulated execution for everything else.
     try:
-        if tool == "open_app" and args.get("label"):
-            out = "Opened %s (simulated)." % args["label"]
+        if tool == "open_app" and (args.get("app") or args.get("label")):
+            out = "Opened %s (simulated)." % (args.get("app") or args.get("label"))
         elif tool == "google_search":
             out = "Searched Google for '%s' (simulated)." % (args.get("query") or "")
         elif tool == "youtube_search":
@@ -526,8 +658,31 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
         elif tool == "type_into":
             out = "Typed '%s' (simulated)." % (args.get("text") or "")
         elif tool in ("mind_note", "mind_recall"):
-            out = "%s recorded (simulated)." % tool
-        elif tool in ("open_url", "close_app", "camera_action", "open_food_search"):
+            try:
+                from brain import recall as _recall
+
+                if tool == "mind_note":
+                    res = _recall.mind_note(
+                        title=args.get("title") or "",
+                        body=args.get("text") or args.get("body") or "",
+                        text=args.get("text") or "",
+                    )
+                else:
+                    res = _recall.mind_recall(args.get("query") or args.get("text") or "")
+                out = (res or {}).get("text") or "%s recorded." % tool
+            except Exception as exc:
+                out = "%s error: %s" % (tool, exc)
+        elif tool in (
+            "open_url",
+            "close_app",
+            "camera_action",
+            "open_food_search",
+            "wait_ms",
+            "click_text",
+            "swipe",
+            "scroll",
+            "press_back",
+        ):
             out = "%s done (simulated)." % tool
         else:
             out = "%s done (simulated)." % tool

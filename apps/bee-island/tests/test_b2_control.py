@@ -107,6 +107,39 @@ class B2ControlTests(unittest.TestCase):
         offline = [r for r in results if isinstance(r, dict) and "laptop offline" in str(r).lower()]
         self.assertTrue(len(offline) >= 1)
 
+    def test_a11y_tools_present(self):
+        names = set()
+        for t in muse_tools.TOOLS:
+            fn = t.get("function", {}) if isinstance(t, dict) else {}
+            n = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(n, str):
+                names.add(n)
+        for want in ("wait_ms", "click_text", "swipe", "scroll", "press_back"):
+            self.assertIn(want, names)
+
+    def test_a11y_known_tools(self):
+        self.assertIsNotNone(phone_actions)
+        known = set(getattr(phone_actions, "_KNOWN_TOOLS", set()) or set())
+        for want in ("wait_ms", "click_text", "swipe", "scroll", "press_back"):
+            self.assertIn(want, known)
+
+    def test_a11y_parse_and_intent(self):
+        fixture = {
+            "output": [
+                {"type": "function_call", "name": "wait_ms", "arguments": '{"ms": 500}'},
+                {"type": "function_call", "name": "click_text", "arguments": '{"text": "Play"}'},
+                {"type": "function_call", "name": "swipe", "arguments": '{"direction": "up"}'},
+                {"type": "function_call", "name": "scroll", "arguments": '{"direction": "down"}'},
+                {"type": "function_call", "name": "press_back", "arguments": '{}'},
+            ]
+        }
+        steps = muse_tools.parse_function_calls(fixture)
+        self.assertEqual([s.get("tool") for s in steps],
+                         ["wait_ms", "click_text", "swipe", "scroll", "press_back"])
+        if phone_actions is not None:
+            for s in steps:
+                self.assertIsNone(phone_actions.intent_for(s))
+
 
 if __name__ == "__main__":
     unittest.main()

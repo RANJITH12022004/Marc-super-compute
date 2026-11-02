@@ -1,0 +1,18 @@
+# marc door — loopback mailbox. Funnel/Vercel reverse here. Never :8096.
+[Unit]
+Description=marc door (loopback HTTPS mailbox backend)
+After=network.target
+
+[Service]
+User=rox
+WorkingDirectory=/home/rox/marc-muse/apps/server/door
+ExecStart=/usr/bin/python3 /home/rox/marc-muse/apps/server/door/server.py
+EnvironmentFile=-/home/rox/marc-muse.env
+Environment=PORT=8787
+Environment=DOOR_BIND=127.0.0.1
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

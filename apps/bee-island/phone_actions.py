@@ -30,6 +30,25 @@ _KNOWN_TOOLS = {
     "dial",
     "open_app",
     "type_into",
+    "wait_ms",
+    "click_text",
+    "swipe",
+    "scroll",
+    "press_back",
+    "auto_scroll",
+    "closed_loop",
+}
+
+# Accessibility tools handled on-device by IslandAccess (Java run() handles
+# them before intentFor). They have no Android intent mapping here.
+_A11Y_TOOLS = {
+    "wait_ms",
+    "click_text",
+    "swipe",
+    "scroll",
+    "press_back",
+    "auto_scroll",
+    "closed_loop",
 }
 
 
@@ -181,6 +200,9 @@ def intent_for(step):
         return None
     # Refuse-like pseudo tools.
     if tool in ("refuse", "reject", "cancel"):
+        return None
+    # A11y tools are handled on-device by IslandAccess; no intent mapping.
+    if tool in _A11Y_TOOLS:
         return None
 
     args = _coerce_args(args_raw)
