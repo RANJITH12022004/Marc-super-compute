@@ -25,10 +25,40 @@ public final class BeeAsk {
 
     public static final Set<String> CONFIRM_TOOLS = Collections.unmodifiableSet(
             new HashSet<String>(Arrays.asList(
+                    "whatsapp_send",
+                    "dial",
                     "instagram_send",
                     "sms_send",
                     "calendar_create",
                     "open_food_search")));
+
+    /** Brain tools must never hit PhoneActions. */
+    public static boolean isBrainTool(String tool) {
+        if (tool == null) {
+            return false;
+        }
+        String t = tool.trim().toLowerCase(Locale.US);
+        return "mind_recall".equals(t)
+                || "mind_note".equals(t)
+                || "whoami".equals(t)
+                || "who_am_i".equals(t);
+    }
+
+    public static boolean isVagueContact(String to) {
+        if (to == null) {
+            return true;
+        }
+        String t = to.trim().toLowerCase(Locale.US);
+        if (t.isEmpty()) {
+            return true;
+        }
+        return "someone".equals(t)
+                || "somebody".equals(t)
+                || "a friend".equals(t)
+                || "them".equals(t)
+                || "him".equals(t)
+                || "her".equals(t);
+    }
 
     private static final Pattern CLAUSE_SPLIT = Pattern.compile(
             "\\s*;\\s*"
@@ -188,7 +218,36 @@ public final class BeeAsk {
         if (low.contains("email")) {
             return false;
         }
+        // Text/WA: local only when contact looks real; vague → Muse leftover.
         if (low.contains("whatsapp") || low.contains("text ")) {
+            List<Map<String, Object>> probe = splitUtterance(text);
+            if (probe != null && !probe.isEmpty()) {
+                Object argsObj = probe.get(0).get("args");
+                if (argsObj instanceof Map) {
+                    Object to = ((Map<?, ?>) argsObj).get("to");
+                    if (isVagueContact(to == null ? "" : String.valueOf(to))) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        if (low.matches("(?s).*\\b(?:call|dial)\\b.*")) {
+            List<Map<String, Object>> probe = splitUtterance(text);
+            if (probe != null && !probe.isEmpty()) {
+                Object argsObj = probe.get(0).get("args");
+                if (argsObj instanceof Map) {
+                    Object to = ((Map<?, ?>) argsObj).get("to");
+                    if (to == null) {
+                        to = ((Map<?, ?>) argsObj).get("contact");
+                    }
+                    if (isVagueContact(to == null ? "" : String.valueOf(to))) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
             return true;
         }
         if (low.contains("notification") || low.contains("suggest reply")
@@ -711,7 +770,8 @@ public final class BeeAsk {
                     || "notifications_list".equals(tool)
                     || "suggest_reply".equals(tool)
                     || "chat_touch".equals(tool)
-                    || "phone_profile_snapshot".equals(tool)) {
+                    || "phone_profile_snapshot".equals(tool)
+                    || "dial".equals(tool)) {
                 return true;
             }
         }
