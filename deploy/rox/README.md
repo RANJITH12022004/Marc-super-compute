@@ -76,6 +76,35 @@ only live mark-laptop / Rox source edit.
 See [../phone/LEFTOVER.md](../phone/LEFTOVER.md). Fast LocalMarc phrases stay
 on-device. Needle `:18096` stays off. Copy [../phone/needle-off.env](../phone/needle-off.env).
 
+## Brain train (personal RAG)
+
+Hybrid ingest (APIs/exports + one-shot phone Settings snapshot + laptop home walk).
+
+1. **Tokens** (never commit): set `GITHUB_TOKEN`, Google token file via
+   `GOOGLE_TOKEN_PATH` / `MARC_GOOGLE_TOKEN_PATH`, and `MARC_MODE=live` only when ready.
+2. **Exports**: drop WhatsApp / Instagram export files, then:
+
+   ```sh
+   cd apps/marc-muse
+   MARC_MIND_DIR=/home/rox/marc/mind python -m ingest_all --export /path/to/export.txt
+   ```
+
+3. **Hermes jobs** (loopback):
+
+   ```sh
+   curl -s -X POST http://127.0.0.1:8095/run \
+     -H 'Content-Type: application/json' \
+     -d '{"kind":"mind_ingest","source":"all","mind_dir":"/home/rox/marc/mind"}'
+   curl -s -X POST http://127.0.0.1:8095/run \
+     -H 'Content-Type: application/json' \
+     -d '{"kind":"laptop_home_ingest","mind_dir":"/home/rox/marc/mind"}'
+   ```
+
+4. **Phone one-shot**: enable Accessibility, say “refresh my phone profile”
+   (tool `phone_profile_snapshot`) → `notes/phone_settings_<date>.md`.
+5. **Recall**: `/whoami`, `/mind?q=…`, and “what do you know about me?” are
+   RAG-first over `mind.sqlite` + vault markdown.
+
 ## Security
 
 - Binds `127.0.0.1:8096` only; do not add `ListenStream` / firewall rules for it.
