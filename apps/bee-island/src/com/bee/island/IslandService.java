@@ -22,6 +22,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
@@ -57,6 +58,10 @@ public class IslandService extends Service {
 
     private static WeakReference<IslandAccess> host;
     private static WeakReference<IslandService> instanceRef;
+
+    static IslandService current() {
+        return (instanceRef == null) ? null : instanceRef.get();
+    }
 
     public static void bindHost(IslandAccess svc) {
         host = (svc == null) ? null : new WeakReference<IslandAccess>(svc);
@@ -115,6 +120,8 @@ public class IslandService extends Service {
     private WindowManager wm;
     private View pill;
     private IslandPillView pillView;
+    private IslandBackdropView backdropView;
+    private IslandWaveView waveView;
     private HydrationHeroView hero;
     private View heroHit;
     private SpeechRecognizer recognizer;
@@ -342,6 +349,8 @@ public class IslandService extends Service {
             }
             pill = null;
             pillView = null;
+            backdropView = null;
+            waveView = null;
 
             // Size window for listen morph so growth stays camera-centered
             // and never clips under the battery / network icons.
@@ -367,6 +376,17 @@ public class IslandService extends Service {
             outer.setClipToPadding(false);
             outer.setLayoutParams(new FrameLayout.LayoutParams(hitW, hitH));
 
+            IslandBackdropView backdrop = new IslandBackdropView(this);
+            // Full listen box so morphing status text stays over animated rim.
+            FrameLayout.LayoutParams backLp =
+                    new FrameLayout.LayoutParams(maxW, maxH);
+            backLp.gravity = Gravity.TOP | Gravity.START;
+            backLp.leftMargin = listenLeft;
+            backLp.topMargin = listenTop;
+            backdrop.setLayoutParams(backLp);
+            outer.addView(backdrop);
+            backdropView = backdrop;
+
             IslandPillView visual = new IslandPillView(this);
             visual.setAnchorInsets(listenLeft, listenTop, maxW, maxH);
             FrameLayout.LayoutParams visualLp =
@@ -377,14 +397,30 @@ public class IslandService extends Service {
             visualLp.leftMargin = listening ? listenLeft : idleLeft;
             visualLp.topMargin = listening ? listenTop : idleTop;
             visual.setLayoutParams(visualLp);
+            visual.setDrawCapsule(false);
             if (listening) {
-                visual.setStatusText("Listening…");
+                visual.setStatusText(BeeAsk.lineFor("listen"));
                 visual.setState(IslandPillView.STATE_LISTENING);
             } else {
                 visual.setState(IslandPillView.STATE_IDLE);
             }
             outer.addView(visual);
             pillView = visual;
+
+            IslandWaveView wave = new IslandWaveView(this);
+            FrameLayout.LayoutParams waveLp =
+                    new FrameLayout.LayoutParams(dp(28), dp(18));
+            waveLp.gravity = Gravity.CENTER_VERTICAL | Gravity.START;
+            waveLp.leftMargin = (listening ? listenLeft : idleLeft) + dp(10);
+            waveLp.topMargin = (listening ? listenTop : idleTop) + dp(10);
+            wave.setLayoutParams(waveLp);
+            outer.addView(wave);
+            waveView = wave;
+            if (listening) {
+                setIslandPhase(IslandBackdropView.STATE_LISTENING, true, false);
+            } else {
+                setIslandPhase(IslandBackdropView.STATE_IDLE, false, false);
+            }
 
             final boolean[] holdFired = new boolean[1];
             final Runnable[] holdRef = new Runnable[1];
@@ -404,8 +440,28 @@ public class IslandService extends Service {
                         holdFired[0] = false;
                         main.removeCallbacks(holdRef[0]);
                         main.postDelayed(holdRef[0], HOLD_MS);
+                        try {
+                            v.animate().scaleX(0.93f).scaleY(0.93f)
+                                    .setDuration(80).start();
+                        } catch (Exception ignored) {
+                        }
+                        return true;
+                    } else if (action == MotionEvent.ACTION_CANCEL) {
+                        main.removeCallbacks(holdRef[0]);
+                        try {
+                            v.animate().scaleX(1f).scaleY(1f).setDuration(180)
+                                    .setInterpolator(new OvershootInterpolator(2.2f))
+                                    .start();
+                        } catch (Exception ignored) {
+                        }
                         return true;
                     } else if (action == MotionEvent.ACTION_UP) {
+                        try {
+                            v.animate().scaleX(1f).scaleY(1f).setDuration(180)
+                                    .setInterpolator(new OvershootInterpolator(2.2f))
+                                    .start();
+                        } catch (Exception ignored) {
+                        }
                         stopAutoScroll();
                         if (holdFired[0]) {
                             holdFired[0] = false;
@@ -501,9 +557,10 @@ public class IslandService extends Service {
             listening = true;
             listenStartedAt = SystemClock.uptimeMillis();
             if (pillView != null) {
-                pillView.setStatusText("Listening…");
+                pillView.setStatusText(BeeAsk.lineFor("listen"));
                 pillView.setState(IslandPillView.STATE_LISTENING);
             }
+            setIslandPhase(IslandBackdropView.STATE_LISTENING, true, false);
             // SpeechRecognizer first: Muse transcribe is a silent 8s record then
             // a POST that usually returns empty, so the user has already stopped
             // talking by the time fallback starts.
@@ -660,6 +717,25 @@ public class IslandService extends Service {
 
                     @Override
                     public void onRmsChanged(float rmsdB) {
+                        float norm = 0f;
+                        try {
+                            // Typical SpeechRecognizer RMS ~ -2..10; map to 0..1.
+                            norm = Math.max(0f, Math.min(1f, (rmsdB + 2f) / 12f));
+                        } catch (Exception ignored) {
+                            norm = 0f;
+                        }
+                        final float level = norm;
+                        main.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (backdropView != null) {
+                                    backdropView.setVoiceLevel(level);
+                                }
+                                if (waveView != null) {
+                                    waveView.setLevel(level);
+                                }
+                            }
+                        });
                     }
 
                     @Override
@@ -722,16 +798,37 @@ public class IslandService extends Service {
         listening = false;
         if (pillView != null && !PaymentGate.isHidden()) {
             pillView.setFail("Try again");
+            setIslandPhase(IslandBackdropView.STATE_ERROR, false, false);
             main.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     if (pillView != null && !PaymentGate.isHidden()) {
                         pillView.setState(IslandPillView.STATE_IDLE);
                     }
+                    setIslandPhase(IslandBackdropView.STATE_IDLE, false, false);
                 }
             }, 1600);
         }
         AskRouter.speak(this, "Didn't catch that. Try again.");
+    }
+
+    private void setIslandPhase(int backdropState, boolean waveActive, boolean waveThink) {
+        try {
+            if (backdropView != null) {
+                backdropView.setState(backdropState);
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            if (waveView != null) {
+                waveView.setMode(waveActive, waveThink);
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            confirming = (backdropState == IslandBackdropView.STATE_CONFIRM);
+        } catch (Exception ignored) {
+        }
     }
 
     void playWaterNow() {
@@ -883,6 +980,7 @@ public class IslandService extends Service {
         if (pillView != null && !PaymentGate.isHidden()) {
             pillView.setState(IslandPillView.STATE_IDLE);
         }
+        setIslandPhase(IslandBackdropView.STATE_IDLE, false, false);
     }
 
     void ask(String text) {
@@ -891,10 +989,39 @@ public class IslandService extends Service {
 
     private void onHeard(String text) {
         if (pillView != null && !PaymentGate.isHidden()) {
-            pillView.setStatusText("Thinking…");
+            pillView.setStatusText(BeeAsk.lineFor("plan"));
             pillView.setState(IslandPillView.STATE_THINKING);
         }
+        setIslandPhase(IslandBackdropView.STATE_THINKING, true, true);
         AskRouter.handle(this, text);
+    }
+
+    /** Called when PendingPlan is staged — amber confirm pulse. */
+    void showConfirmPulse() {
+        if (PaymentGate.isHidden()) {
+            return;
+        }
+        if (pillView != null) {
+            pillView.setStatusText(BeeAsk.lineFor("confirm"));
+            pillView.setState(IslandPillView.STATE_THINKING);
+        }
+        setIslandPhase(IslandBackdropView.STATE_CONFIRM, false, false);
+    }
+
+    void showActing() {
+        setIslandPhase(IslandBackdropView.STATE_ACTING, false, false);
+        if (pillView != null && !PaymentGate.isHidden()) {
+            pillView.setSuccess(BeeAsk.lineFor("done"));
+            main.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (pillView != null && !PaymentGate.isHidden()) {
+                        pillView.setState(IslandPillView.STATE_IDLE);
+                    }
+                    setIslandPhase(IslandBackdropView.STATE_IDLE, false, false);
+                }
+            }, 2200);
+        }
     }
 
     private void hidePill() {
@@ -912,6 +1039,8 @@ public class IslandService extends Service {
         }
         pill = null;
         pillView = null;
+        backdropView = null;
+        waveView = null;
     }
 
     private int dp(int v) {

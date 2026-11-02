@@ -6,7 +6,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.util.AttributeSet;
-import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 
 /**
@@ -28,12 +28,14 @@ public class IslandPillView extends FrameLayout {
     private static final int RIM_IDLE = 0xFF2C2C2E;
     private static final int RIM_LISTEN = 0x66FFFFFF;
     private static final int RIM_THINK = 0x44FFFFFF;
-    private static final int RIM_OK = 0xFF4CAF50;
-    private static final int RIM_FAIL = 0xFFD32F2F;
+    private static final int RIM_OK = 0xFF30D158;
+    private static final int RIM_FAIL = 0xFFFF453A;
     private static final int TEXT = 0xFFF5F5F7;
 
     private String state = STATE_IDLE;
     private String statusText = "";
+    /** When false, backdrop draws the capsule; this view only morphs + status text. */
+    private boolean drawCapsule = true;
 
     private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -213,6 +215,13 @@ public class IslandPillView extends FrameLayout {
         }
     }
 
+    public void setDrawCapsule(boolean draw) {
+        drawCapsule = draw;
+        setWillNotDraw(false);
+        setBackgroundColor(0x00000000);
+        invalidate();
+    }
+
     private void cancelWidthMorph() {
         if (widthAnim != null) {
             try {
@@ -263,8 +272,8 @@ public class IslandPillView extends FrameLayout {
             return;
         }
         widthAnim = ValueAnimator.ofFloat(0f, 1f);
-        widthAnim.setDuration(320);
-        widthAnim.setInterpolator(new DecelerateInterpolator(1.6f));
+        widthAnim.setDuration(240);
+        widthAnim.setInterpolator(new OvershootInterpolator(1.6f));
         widthAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override
             public void onAnimationUpdate(ValueAnimator animation) {
@@ -307,8 +316,10 @@ public class IslandPillView extends FrameLayout {
         float inset = Math.max(1f, density * 0.75f);
         float radius = h / 2f;
         pillRect.set(inset, inset, w - inset, h - inset);
-        canvas.drawRoundRect(pillRect, radius, radius, fillPaint);
-        canvas.drawRoundRect(pillRect, radius, radius, rimPaint);
+        if (drawCapsule) {
+            canvas.drawRoundRect(pillRect, radius, radius, fillPaint);
+            canvas.drawRoundRect(pillRect, radius, radius, rimPaint);
+        }
         String line = statusText == null ? "" : statusText.trim();
         if (!line.isEmpty() && (STATE_LISTENING.equals(state)
                 || STATE_THINKING.equals(state)

@@ -243,6 +243,30 @@ class ClosedLoopHandsTest(unittest.TestCase):
         self.assertIn("visibleTextDump", _read("IslandAccess.java"))
         self.assertIn("phone_profile_snapshot", _read("BeeAsk.java"))
 
+    def test_door_whoami_uses_v1_and_auth(self):
+        rox = _read("RoxClient.java")
+        self.assertIn("/v1/whoami", rox)
+        self.assertIn("applyAuth", rox)
+        mind = _read("BeeMind.java")
+        self.assertIn("where am i", mind)
+        self.assertNotIn('me = "Unknown."', mind)
+        self.assertNotIn('now = "Unknown."', mind)
+
+    def test_confirm_includes_wa_and_dial(self):
+        ask = _read("BeeAsk.java")
+        self.assertIn('"whatsapp_send"', ask)
+        self.assertIn('"dial"', ask)
+        self.assertIn("isBrainTool", ask)
+        self.assertIn("isVagueContact", ask)
+
+    def test_island_backdrop_and_wave_present(self):
+        self.assertIn("STATE_CONFIRM", _read("IslandBackdropView.java"))
+        self.assertIn("setMode", _read("IslandWaveView.java"))
+        service = _read("IslandService.java")
+        self.assertIn("setVoiceLevel", service)
+        self.assertIn("IslandWaveView", service)
+        self.assertIn("OvershootInterpolator", service)
+
 
 if __name__ == "__main__":
     unittest.main()
