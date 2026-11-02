@@ -136,8 +136,11 @@ def _expand_combined(clause):
     return expanded
 
 
-def _resolve_device(clause, target):
+def _resolve_device(clause, target, tool=None):
     low = (clause or "").lower()
+    tool_l = (tool or "").strip().lower()
+    if tool_l in ("mind_recall", "mind_note", "whoami", "who_am_i"):
+        return "laptop"
     if "on my phone" in low or "on the phone" in low:
         return "phone"
     if "on my laptop" in low or "on the laptop" in low:
@@ -269,7 +272,8 @@ def _clause_to_tool(clause):
     ):
         return "phone_profile_snapshot", {}
     if re.search(
-        r"what was i doing|who am i|what do you know about me|"
+        r"what was i doing|who am i|where am i|what will you do|"
+        r"what are you doing|what do you know about me|"
         r"what.*(know|remember).*(about me|my)|my (chats|projects|repos)|"
         r"what.*(ip|address)",
         low,
@@ -402,7 +406,7 @@ def _local_plan(text, session_id, target):
         if not mapped or mapped[0] is None:
             continue
         tool, args = mapped[0], mapped[1]
-        device = _resolve_device(clause, target)
+        device = _resolve_device(clause, target, tool=tool)
         kind = _kind_for(clause, text, tool)
         sid = "s%d" % (len(plan) + 1)
         after = [] if prev_id is None else [prev_id]
@@ -1037,7 +1041,8 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
         low_raw = (raw or "").lower()
         force_rag = bool(
             re.search(
-                r"who am i|what do you know about me|know about me|"
+                r"who am i|where am i|what will you do|what are you doing|"
+                r"what do you know about me|know about me|"
                 r"my (chats|projects|repos)|what.*(remember|know).*me",
                 low_raw,
             )

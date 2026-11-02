@@ -744,9 +744,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 snap = {}
             phone_steps = []
+            _brain_tools = frozenset(
+                {"mind_recall", "mind_note", "whoami", "who_am_i"}
+            )
             try:
                 for s in plan:
                     if not isinstance(s, dict):
+                        continue
+                    tool = str(s.get("tool") or "").strip().lower()
+                    if tool in _brain_tools:
                         continue
                     dev = str(s.get("device") or "phone").lower()
                     if dev == "phone":
