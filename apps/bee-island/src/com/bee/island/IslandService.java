@@ -47,6 +47,9 @@ public class IslandService extends Service {
 
     private static final int PILL_W_DP = 126;
     private static final int PILL_H_DP = 34;
+    /** Overlay is always sized for listen so morph never clips status icons. */
+    private static final int PILL_LISTEN_W_DP = 168;
+    private static final int PILL_LISTEN_H_DP = 38;
     private static final long HOLD_MS = 2000;
     private static final long REEL_CAP_MS = 15000;
     private static final long REEL_HEARTBEAT_MS = 300;
@@ -340,27 +343,39 @@ public class IslandService extends Service {
             pill = null;
             pillView = null;
 
-            int visualW = dp(PILL_W_DP);
-            int visualH = dp(PILL_H_DP);
+            // Size window for listen morph so growth stays camera-centered
+            // and never clips under the battery / network icons.
+            int maxW = dp(PILL_LISTEN_W_DP);
+            int maxH = dp(PILL_LISTEN_H_DP);
+            int idleW = dp(PILL_W_DP);
+            int idleH = dp(PILL_H_DP);
             int slopPx = dp(IslandTouch.HIT_SLOP_DP);
             float[] box = IslandTouch.pillWindow(CAMERA_X_PX, CAMERA_Y_PX,
-                    (float) visualW, (float) visualH, (float) slopPx);
+                    (float) maxW, (float) maxH, (float) slopPx);
             int hitW = Math.round(box[2]);
             int hitH = Math.round(box[3]);
             int winX = Math.round(box[0]);
             int winY = Math.round(box[1]);
-            int visualLeft = Math.round(box[4]);
-            int visualTop = Math.round(box[5]);
+            int listenLeft = Math.round(box[4]);
+            int listenTop = Math.round(box[5]);
+            // Idle is inset so its center matches listen (and camera).
+            int idleLeft = listenLeft + (maxW - idleW) / 2;
+            int idleTop = listenTop + (maxH - idleH) / 2;
 
             FrameLayout outer = new FrameLayout(this);
+            outer.setClipChildren(false);
+            outer.setClipToPadding(false);
             outer.setLayoutParams(new FrameLayout.LayoutParams(hitW, hitH));
 
             IslandPillView visual = new IslandPillView(this);
+            visual.setAnchorInsets(listenLeft, listenTop, maxW, maxH);
             FrameLayout.LayoutParams visualLp =
-                    new FrameLayout.LayoutParams(visualW, visualH);
+                    new FrameLayout.LayoutParams(
+                            listening ? maxW : idleW,
+                            listening ? maxH : idleH);
             visualLp.gravity = Gravity.TOP | Gravity.START;
-            visualLp.leftMargin = visualLeft;
-            visualLp.topMargin = visualTop;
+            visualLp.leftMargin = listening ? listenLeft : idleLeft;
+            visualLp.topMargin = listening ? listenTop : idleTop;
             visual.setLayoutParams(visualLp);
             if (listening) {
                 visual.setStatusText("Listening…");

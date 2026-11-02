@@ -46,6 +46,10 @@ public class IslandPillView extends FrameLayout {
     private int listenHeightPx;
     private int currentWidthPx;
     private int currentHeightPx;
+    private int anchorLeftPx;
+    private int anchorTopPx;
+    private int anchorMaxWPx;
+    private int anchorMaxHPx;
     private ValueAnimator widthAnim;
     private float density = 1f;
 
@@ -107,6 +111,17 @@ public class IslandPillView extends FrameLayout {
 
     public void setListenWidth(int px) {
         listenWidthPx = px;
+    }
+
+    /**
+     * Parent overlay is sized for listen max; idle morph insets so the pill
+     * stays centered on the camera punch-hole.
+     */
+    public void setAnchorInsets(int listenLeftPx, int listenTopPx, int maxWPx, int maxHPx) {
+        anchorLeftPx = listenLeftPx;
+        anchorTopPx = listenTopPx;
+        anchorMaxWPx = maxWPx;
+        anchorMaxHPx = maxHPx;
     }
 
     public void setState(String next) {
@@ -208,6 +223,20 @@ public class IslandPillView extends FrameLayout {
         }
     }
 
+    private int marginForWidth(int widthPx) {
+        if (anchorMaxWPx <= 0) {
+            return anchorLeftPx;
+        }
+        return anchorLeftPx + Math.max(0, (anchorMaxWPx - widthPx) / 2);
+    }
+
+    private int marginForHeight(int heightPx) {
+        if (anchorMaxHPx <= 0) {
+            return anchorTopPx;
+        }
+        return anchorTopPx + Math.max(0, (anchorMaxHPx - heightPx) / 2);
+    }
+
     private void morphToSize(final int targetWidthPx, final int targetHeightPx) {
         if (targetWidthPx <= 0) {
             return;
@@ -215,7 +244,20 @@ public class IslandPillView extends FrameLayout {
         cancelWidthMorph();
         final int fromW = currentWidthPx <= 0 ? targetWidthPx : currentWidthPx;
         final int fromH = currentHeightPx <= 0 ? targetHeightPx : currentHeightPx;
-        if (fromW == targetWidthPx && fromH == targetHeightPx) {
+        final int fromLeft;
+        final int fromTop;
+        if (getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams cur = (FrameLayout.LayoutParams) getLayoutParams();
+            fromLeft = cur.leftMargin;
+            fromTop = cur.topMargin;
+        } else {
+            fromLeft = marginForWidth(fromW);
+            fromTop = marginForHeight(fromH);
+        }
+        final int toLeft = marginForWidth(targetWidthPx);
+        final int toTop = marginForHeight(targetHeightPx);
+        if (fromW == targetWidthPx && fromH == targetHeightPx
+                && fromLeft == toLeft && fromTop == toTop) {
             currentWidthPx = targetWidthPx;
             currentHeightPx = targetHeightPx;
             return;
@@ -229,9 +271,18 @@ public class IslandPillView extends FrameLayout {
                 float t = ((Float) animation.getAnimatedValue()).floatValue();
                 int width = Math.round(fromW + (targetWidthPx - fromW) * t);
                 int height = Math.round(fromH + (targetHeightPx - fromH) * t);
+                int left = Math.round(fromLeft + (toLeft - fromLeft) * t);
+                int top = Math.round(fromTop + (toTop - fromTop) * t);
                 currentWidthPx = width;
                 currentHeightPx = height;
-                if (getLayoutParams() != null) {
+                if (getLayoutParams() instanceof FrameLayout.LayoutParams) {
+                    FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) getLayoutParams();
+                    lp.width = width;
+                    lp.height = height;
+                    lp.leftMargin = left;
+                    lp.topMargin = top;
+                    setLayoutParams(lp);
+                } else if (getLayoutParams() != null) {
                     getLayoutParams().width = width;
                     getLayoutParams().height = height;
                     requestLayout();
