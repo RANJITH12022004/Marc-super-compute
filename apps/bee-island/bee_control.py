@@ -283,6 +283,14 @@ def clause_to_tool(clause):
             },
             device,
         )
+    if (
+        'phone profile' in low_raw
+        or 'snapshot phone' in low_raw
+        or 'refresh my phone profile' in low_raw
+        or 'phone settings snapshot' in low_raw
+        or ('about phone' in low_raw and 'snapshot' in low_raw)
+    ):
+        return _ToolResult('phone_profile_snapshot', {}, device)
     if re.search(r'\b(?:new\s+)?notifications?\b', low_raw) or 'what are the new notification' in low_raw:
         return _ToolResult('notifications_list', {}, device)
     m = re.match(

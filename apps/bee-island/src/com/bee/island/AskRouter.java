@@ -348,6 +348,9 @@ final class AskRouter {
         if ("notifications_list".equals(tool) || "suggest_reply".equals(tool)) {
             return "";
         }
+        if ("phone_profile_snapshot".equals(tool)) {
+            return "Capturing phone settings once.";
+        }
         return "";
     }
 

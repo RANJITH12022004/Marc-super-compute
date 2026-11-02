@@ -710,7 +710,8 @@ public final class BeeAsk {
                     || "youtube_search".equals(tool)
                     || "notifications_list".equals(tool)
                     || "suggest_reply".equals(tool)
-                    || "chat_touch".equals(tool)) {
+                    || "chat_touch".equals(tool)
+                    || "phone_profile_snapshot".equals(tool)) {
                 return true;
             }
         }
@@ -781,6 +782,15 @@ public final class BeeAsk {
             args.put("channel", "whatsapp");
             args.put("package", waPackageFor(low));
             row.put("args", args);
+            return row;
+        }
+        if (low.contains("phone profile")
+                || low.contains("snapshot phone")
+                || low.contains("refresh my phone profile")
+                || low.contains("phone settings snapshot")
+                || (low.contains("about phone") && low.contains("snapshot"))) {
+            row.put("tool", "phone_profile_snapshot");
+            row.put("args", new HashMap<String, String>());
             return row;
         }
         if (low.matches("(?s).*\\b(?:new\\s+)?notifications?\\b.*")

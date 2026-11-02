@@ -235,6 +235,14 @@ class ClosedLoopHandsTest(unittest.TestCase):
         router = _read("AskRouter.java")
         self.assertIn("Say confirm to send.", router)
 
+    def test_phone_profile_snapshot_tool(self):
+        step = bee_control.clause_to_tool("refresh my phone profile")
+        self.assertEqual(step.tool, "phone_profile_snapshot")
+        phone = _read("PhoneActions.java")
+        self.assertIn("phone_profile_snapshot", phone)
+        self.assertIn("visibleTextDump", _read("IslandAccess.java"))
+        self.assertIn("phone_profile_snapshot", _read("BeeAsk.java"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,9 +5,12 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.provider.Settings;
 import android.view.KeyEvent;
 import android.view.inputmethod.InputConnection;
 
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -187,6 +190,10 @@ final class PhoneActions {
             result.put("to", who);
             result.put("package", resolveWaPackage(str(args, "package"), who));
             return result;
+        }
+
+        if ("phone_profile_snapshot".equals(tool)) {
+            return drivePhoneProfileSnapshot(context, result);
         }
 
         if ("play_music".equals(tool)) {
@@ -473,6 +480,116 @@ final class PhoneActions {
         }
         return IslandAccess.typeViewId("com.whatsapp.w4b:id/" + id, body)
                 || IslandAccess.typeViewId("com.whatsapp:id/" + id, body);
+    }
+
+    /**
+     * One-shot Accessibility Settings/profile text dump → door /note.
+     * Never continuous WA/IG scrape.
+     */
+    static Map<String, Object> drivePhoneProfileSnapshot(Context context,
+            Map<String, Object> result) {
+        StringBuilder dump = new StringBuilder();
+        try {
+            Intent settings = new Intent(Settings.ACTION_SETTINGS);
+            settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(settings);
+            try {
+                Thread.sleep(1400);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            try {
+                IslandAccess.clickText("About phone");
+            } catch (Exception ignored) {
+            } catch (NoSuchMethodError ignored) {
+            }
+            try {
+                Thread.sleep(900);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            String about = "";
+            try {
+                about = IslandAccess.visibleTextDump();
+            } catch (Exception ignored) {
+                about = "";
+            } catch (NoSuchMethodError e) {
+                try {
+                    about = IslandAccess.nodeDump();
+                } catch (Exception ignored) {
+                    about = "";
+                }
+            }
+            if (about != null && about.length() > 0) {
+                dump.append("## About / Settings\n\n").append(about).append("\n\n");
+            }
+            try {
+                IslandAccess.pressBack();
+            } catch (Exception ignored) {
+            } catch (NoSuchMethodError ignored) {
+            }
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            try {
+                IslandAccess.clickText("Accounts");
+            } catch (Exception ignored) {
+            } catch (NoSuchMethodError ignored) {
+            }
+            try {
+                Thread.sleep(800);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            String accounts = "";
+            try {
+                accounts = IslandAccess.visibleTextDump();
+            } catch (Exception ignored) {
+                accounts = "";
+            } catch (NoSuchMethodError e) {
+                try {
+                    accounts = IslandAccess.nodeDump();
+                } catch (Exception ignored) {
+                    accounts = "";
+                }
+            }
+            if (accounts != null && accounts.length() > 0) {
+                dump.append("## Accounts\n\n").append(accounts).append("\n");
+            }
+        } catch (Exception e) {
+            result.put("ok", Boolean.FALSE);
+            result.put("error", "snapshot failed");
+            result.put("spoken", "Could not snapshot phone settings.");
+            return result;
+        }
+        String body = dump.toString().trim();
+        if (body.isEmpty()) {
+            result.put("ok", Boolean.FALSE);
+            result.put("error", "empty dump");
+            result.put("spoken", "Settings dump was empty — enable Accessibility.");
+            return result;
+        }
+        if (body.length() > 12000) {
+            body = body.substring(0, 12000) + "\n…[truncated]";
+        }
+        String day = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+        String title = "phone_settings_" + day;
+        boolean posted = false;
+        try {
+            posted = RoxClient.postNote(context, title, body);
+        } catch (Exception ignored) {
+            posted = false;
+        }
+        result.put("ok", Boolean.TRUE);
+        result.put("title", title);
+        result.put("posted", posted ? Boolean.TRUE : Boolean.FALSE);
+        result.put("chars", Integer.valueOf(body.length()));
+        result.put("spoken", posted
+                ? "Phone profile saved to mind."
+                : "Captured settings; door note failed — saved locally if possible.");
+        return result;
     }
 
     static Map<String, Object> drivePlayMusic(Context context, String query, Map<String, Object> result) {

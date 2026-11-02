@@ -806,6 +806,108 @@ public class IslandAccess extends AccessibilityService {
         return dump;
     }
 
+    /** Visible text dump for one-shot Settings/profile snapshot (not continuous scrape). */
+    static String visibleTextDump() {
+        List<String> labs = new ArrayList<String>();
+        IslandAccess svc = self == null ? null : self.get();
+        if (svc == null) {
+            return "";
+        }
+        AccessibilityNodeInfo root = null;
+        try {
+            root = svc.getRootInActiveWindow();
+        } catch (Exception ignored) {
+            return "";
+        }
+        if (root == null) {
+            return "";
+        }
+        try {
+            collectVisibleText(root, labs);
+        } catch (Exception ignored) {
+        }
+        try {
+            root.recycle();
+        } catch (Exception ignored) {
+        }
+        StringBuilder b = new StringBuilder();
+        int n = labs.size();
+        if (n > 120) {
+            n = 120;
+        }
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                b.append("\n");
+            }
+            b.append(labs.get(i));
+        }
+        return b.toString();
+    }
+
+    private static void collectVisibleText(AccessibilityNodeInfo node, List<String> out) {
+        if (node == null || out == null || out.size() >= 120) {
+            return;
+        }
+        try {
+            boolean visible = false;
+            try {
+                visible = node.isVisibleToUser();
+            } catch (Exception ignored) {
+                visible = false;
+            }
+            if (visible) {
+                String label = null;
+                try {
+                    CharSequence t = node.getText();
+                    if (t != null) {
+                        label = t.toString().trim();
+                    }
+                } catch (Exception ignored) {
+                }
+                if (label == null || label.isEmpty()) {
+                    try {
+                        CharSequence d = node.getContentDescription();
+                        if (d != null) {
+                            label = d.toString().trim();
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (label != null && !label.isEmpty() && label.length() < 200) {
+                    if (!out.contains(label)) {
+                        out.add(label);
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        int n = 0;
+        try {
+            n = node.getChildCount();
+        } catch (Exception ignored) {
+            n = 0;
+        }
+        for (int i = 0; i < n && out.size() < 120; i++) {
+            AccessibilityNodeInfo child = null;
+            try {
+                child = node.getChild(i);
+            } catch (Exception ignored) {
+                child = null;
+            }
+            if (child == null) {
+                continue;
+            }
+            try {
+                collectVisibleText(child, out);
+            } finally {
+                try {
+                    child.recycle();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
     private static boolean clickClickableAncestor(AccessibilityNodeInfo hit) {
         if (hit == null) {
             return false;
