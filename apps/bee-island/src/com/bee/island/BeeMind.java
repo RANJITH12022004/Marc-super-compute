@@ -25,16 +25,19 @@ public class BeeMind {
             return false;
         }
         String low = text.toLowerCase(Locale.US);
-        if (low.contains("whoami")) {
+        if (low.contains("whoami") || low.contains("who am i")) {
             return true;
         }
-        if (low.contains("who am i")) {
+        if (low.contains("where am i")) {
             return true;
         }
-        if (low.contains("what was i doing")) {
+        if (low.contains("what do you know about me") || low.contains("know about me")) {
             return true;
         }
-        if (low.contains("what am i doing")) {
+        if (low.contains("what will you do") || low.contains("what are you doing")) {
+            return true;
+        }
+        if (low.contains("what was i doing") || low.contains("what am i doing")) {
             return true;
         }
         if (low.matches("(?s).*\\bwhat\\b.*\\bdoing\\b.*")) {
@@ -47,6 +50,48 @@ public class BeeMind {
             return true;
         }
         return false;
+    }
+
+    /** Prefer short spoken lines from markdown soul text. */
+    static String speakable(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String s = raw.trim();
+        if (s.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder();
+        String[] lines = s.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith("---")) {
+                continue;
+            }
+            if (line.startsWith("- ")) {
+                line = line.substring(2).trim();
+            }
+            line = line.replaceAll("\\[\\[([^\\]]+)\\]\\]", "$1");
+            line = line.replaceAll("</?b>", "");
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (out.length() > 0) {
+                out.append(" ");
+            }
+            out.append(line);
+            if (out.length() > 280) {
+                break;
+            }
+        }
+        String spoken = out.toString().trim();
+        if (spoken.isEmpty()) {
+            spoken = s.replaceAll("#+", " ").replaceAll("\\s+", " ").trim();
+        }
+        if (spoken.length() > CONTEXT_MAX) {
+            spoken = spoken.substring(0, CONTEXT_MAX);
+        }
+        return spoken;
     }
 
     public static String whoAmI(Context context) {
@@ -225,35 +270,58 @@ public class BeeMind {
             return false;
         }
         String low = text.toLowerCase(Locale.US);
-        if (low.contains("whoami") || low.contains("who am i")) {
+        boolean identity = low.contains("whoami") || low.contains("who am i")
+                || low.contains("where am i")
+                || low.contains("what do you know about me")
+                || low.contains("know about me");
+        boolean doing = low.contains("what will you do")
+                || low.contains("what are you doing")
+                || low.contains("what was i doing")
+                || low.contains("what am i doing")
+                || low.matches("(?s).*\\bwhat\\b.*\\bdoing\\b.*");
+        if (identity) {
             String me = whoAmI(context);
             if (me == null) {
                 me = "";
             }
-            me = me.trim();
-            if (me.isEmpty()) {
-                me = "Unknown.";
+            me = speakable(me);
+            if (me.isEmpty() && RoxClient.reachable(context)) {
+                try {
+                    String mind = RoxClient.getMind(context, text);
+                    me = speakable(mind);
+                } catch (Exception ignored) {
+                    me = "";
+                }
             }
-            if (me.length() > CONTEXT_MAX) {
-                me = me.substring(0, CONTEXT_MAX);
+            if (me.isEmpty()) {
+                // Let AskRouter leftover hit Muse /utterance (RAG-first).
+                return false;
             }
             AskRouter.speak(context, me);
             return true;
         }
-        if (low.matches("(?s).*\\bwhat\\b.*\\bdoing\\b.*")) {
+        if (doing) {
             String now = whatWasIDoing(context);
             if (now == null) {
                 now = "";
             }
-            now = now.trim();
-            if (now.isEmpty()) {
-                now = "Unknown.";
+            now = speakable(now);
+            if (now.isEmpty() && RoxClient.reachable(context)) {
+                try {
+                    String mind = RoxClient.getMind(context, text);
+                    now = speakable(mind);
+                } catch (Exception ignored) {
+                    now = "";
+                }
             }
-            if (now.length() > CONTEXT_MAX) {
-                now = now.substring(0, CONTEXT_MAX);
+            if (now.isEmpty()) {
+                return false;
             }
             AskRouter.speak(context, now);
             return true;
+        }
+        if (!low.matches("(?s).*\\bremember\\b.*") && !low.matches("(?s).*\\bnote\\b.*")) {
+            return false;
         }
         String body = text.trim();
         String lowBody = body.toLowerCase(Locale.US);

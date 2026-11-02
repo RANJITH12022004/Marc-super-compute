@@ -90,109 +90,80 @@ final class RoxClient {
         }
     }
 
-    static String getWhoami(Context context) {
-        try {
-            String base = baseUrl(context);
-            if (base == null || base.isEmpty()) {
-                return "";
+    /** GET with /v1 first then bare path; always applies auth. */
+    private static String getDoorText(Context context, String[] paths) {
+        String base = baseUrl(context);
+        if (base == null || base.isEmpty() || paths == null) {
+            return "";
+        }
+        for (int i = 0; i < paths.length; i++) {
+            String path = paths[i];
+            if (path == null || path.isEmpty()) {
+                continue;
             }
             HttpURLConnection conn = null;
             try {
-                URL url = new URL(base + "/whoami");
+                URL url = new URL(base + path);
                 conn = (HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3500);
+                conn.setConnectTimeout(4000);
+                conn.setReadTimeout(8000);
                 conn.setRequestMethod("GET");
                 conn.setRequestProperty("Accept", "application/json");
+                applyAuth(conn, context);
                 int code = conn.getResponseCode();
                 if (code < 200 || code >= 300) {
-                    return "";
+                    continue;
                 }
                 InputStream in = null;
                 try {
                     in = conn.getInputStream();
-                } catch (Exception e) {
-                    return "";
-                }
-                if (in == null) {
-                    return "";
-                }
-                String body;
-                try {
-                    body = readAll(in);
+                    if (in == null) {
+                        continue;
+                    }
+                    String body = readAll(in);
+                    String text = extractText(body);
+                    if (text != null && !text.trim().isEmpty()) {
+                        return text.trim();
+                    }
+                    if (body != null && !body.trim().isEmpty() && !body.trim().startsWith("{")) {
+                        return body.trim();
+                    }
                 } finally {
-                    try {
-                        in.close();
-                    } catch (Exception ignored) {
+                    if (in != null) {
+                        try {
+                            in.close();
+                        } catch (Exception ignored) {
+                        }
                     }
                 }
-                return extractText(body);
-            } catch (Exception e) {
-                return "";
+            } catch (Exception ignored) {
             } finally {
                 if (conn != null) {
                     conn.disconnect();
                 }
             }
-        } catch (Exception e) {
-            return "";
         }
+        return "";
+    }
+
+    static String getWhoami(Context context) {
+        return getDoorText(context, new String[] {"/v1/whoami", "/api/v1/whoami", "/whoami"});
     }
 
     static String getMind(Context context, String q) {
+        String query = q == null ? "" : q;
+        String encoded;
         try {
-            String base = baseUrl(context);
-            if (base == null || base.isEmpty()) {
-                return "";
-            }
-            String query = q == null ? "" : q;
-            String encoded;
-            try {
-                encoded = URLEncoder.encode(query, "UTF-8");
-            } catch (Exception e) {
-                encoded = "";
-            }
-            HttpURLConnection conn = null;
-            try {
-                URL url = new URL(base + "/mind?q=" + encoded);
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3500);
-                conn.setRequestMethod("GET");
-                conn.setRequestProperty("Accept", "application/json");
-                int code = conn.getResponseCode();
-                if (code < 200 || code >= 300) {
-                    return "";
-                }
-                InputStream in = null;
-                try {
-                    in = conn.getInputStream();
-                } catch (Exception e) {
-                    return "";
-                }
-                if (in == null) {
-                    return "";
-                }
-                String body;
-                try {
-                    body = readAll(in);
-                } finally {
-                    try {
-                        in.close();
-                    } catch (Exception ignored) {
-                    }
-                }
-                return extractText(body);
-            } catch (Exception e) {
-                return "";
-            } finally {
-                if (conn != null) {
-                    conn.disconnect();
-                }
-            }
+            encoded = URLEncoder.encode(query, "UTF-8");
         } catch (Exception e) {
-            return "";
+            encoded = "";
         }
+        String qs = encoded.isEmpty() ? "" : ("?q=" + encoded);
+        return getDoorText(context, new String[] {
+                "/v1/mind" + qs,
+                "/api/v1/mind" + qs,
+                "/mind" + qs
+        });
     }
 
     static boolean postNote(Context context, String title, String body) {
@@ -203,64 +174,70 @@ final class RoxClient {
             }
             String t = title == null ? "" : title;
             String b = body == null ? "" : body;
-            HttpURLConnection conn = null;
-            try {
-                URL url = new URL(base + "/note");
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3500);
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("Accept", "application/json");
-                Map<String, Object> payload = new HashMap<String, Object>();
-                payload.put("title", t);
-                payload.put("body", b);
-                String json = MuseClient.toJson(payload);
-                byte[] data = json.getBytes(StandardCharsets.UTF_8);
-                OutputStream out = null;
+            Map<String, Object> payload = new HashMap<String, Object>();
+            payload.put("title", t);
+            payload.put("body", b);
+            String json = MuseClient.toJson(payload);
+            String[] paths = new String[] {"/v1/note", "/api/v1/note", "/note"};
+            for (int i = 0; i < paths.length; i++) {
+                HttpURLConnection conn = null;
                 try {
-                    out = conn.getOutputStream();
-                    out.write(data);
-                    out.flush();
-                } finally {
-                    if (out != null) {
-                        try {
-                            out.close();
-                        } catch (Exception ignored) {
+                    URL url = new URL(base + paths[i]);
+                    conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(3000);
+                    conn.setReadTimeout(3500);
+                    conn.setRequestMethod("POST");
+                    conn.setDoOutput(true);
+                    conn.setRequestProperty("Content-Type", "application/json");
+                    conn.setRequestProperty("Accept", "application/json");
+                    applyAuth(conn, context);
+                    byte[] data = json.getBytes(StandardCharsets.UTF_8);
+                    OutputStream out = null;
+                    try {
+                        out = conn.getOutputStream();
+                        out.write(data);
+                        out.flush();
+                    } finally {
+                        if (out != null) {
+                            try {
+                                out.close();
+                            } catch (Exception ignored) {
+                            }
                         }
                     }
-                }
-                int code = conn.getResponseCode();
-                InputStream in = null;
-                try {
+                    int code = conn.getResponseCode();
+                    InputStream in = null;
+                    try {
+                        if (code >= 200 && code < 300) {
+                            in = conn.getInputStream();
+                        } else {
+                            in = conn.getErrorStream();
+                        }
+                        if (in != null) {
+                            byte[] buf = new byte[1024];
+                            while (in.read(buf) != -1) {
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    } finally {
+                        if (in != null) {
+                            try {
+                                in.close();
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
                     if (code >= 200 && code < 300) {
-                        in = conn.getInputStream();
-                    } else {
-                        in = conn.getErrorStream();
-                    }
-                    if (in != null) {
-                        byte[] buf = new byte[1024];
-                        while (in.read(buf) != -1) {
-                        }
+                        return true;
                     }
                 } catch (Exception ignored) {
                 } finally {
-                    if (in != null) {
-                        try {
-                            in.close();
-                        } catch (Exception ignored) {
-                        }
+                    if (conn != null) {
+                        conn.disconnect();
                     }
                 }
-                return code >= 200 && code < 300;
-            } catch (Exception e) {
-                return false;
-            } finally {
-                if (conn != null) {
-                    conn.disconnect();
-                }
             }
+            return false;
         } catch (Exception e) {
             return false;
         }
