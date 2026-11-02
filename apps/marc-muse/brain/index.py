@@ -22,6 +22,7 @@ from pathlib import Path
 __all__ = [
     "rebuild",
     "search",
+    "search_messages",
     "get_db_path",
     "ensure_schema",
     "upsert_person",
@@ -482,5 +483,68 @@ def search(
                 }
             )
         return out
+    finally:
+        con.close()
+
+
+def search_messages(
+    query: str,
+    limit: int = 8,
+    mind_dir: str | Path | None = None,
+) -> list[dict]:
+    """LIKE/token search over recent ``messages`` rows (webhook chat memory)."""
+    base = _resolve_mind_dir(mind_dir)
+    db_path = base / DB_REL
+    try:
+        n = max(1, min(int(limit), 50))
+    except Exception:
+        n = 8
+    qtokens = tokenize(query or "")
+    if not qtokens or not db_path.exists():
+        return []
+    con = _connect(db_path)
+    try:
+        try:
+            _init_db(con)
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cur = con.execute(
+                "SELECT m.id AS id, m.body AS body, m.direction AS direction,"
+                " m.ts AS ts, t.channel AS channel, t.external_id AS external_id,"
+                " t.person_slug AS person_slug"
+                " FROM messages m"
+                " LEFT JOIN threads t ON t.id = m.thread_id"
+                " ORDER BY m.ts DESC LIMIT 800"
+            )
+        except sqlite3.OperationalError:
+            return []
+        qset = set(qtokens)
+        rows: list[dict] = []
+        for r in cur.fetchall():
+            body = r["body"] or ""
+            low = body.lower()
+            toks = set(tokenize(body))
+            overlap = len(qset & toks)
+            if overlap <= 0 and not any(t in low for t in qtokens):
+                continue
+            if overlap <= 0:
+                overlap = 1
+            snippet = body[:240]
+            path = "messages/%s/%s" % (
+                r["channel"] or "chat",
+                r["person_slug"] or r["external_id"] or "thread",
+            )
+            rows.append(
+                {
+                    "path": path,
+                    "heading": (r["person_slug"] or r["channel"] or "message"),
+                    "snippet": snippet,
+                    "score": float(overlap),
+                    "direction": r["direction"] or "",
+                }
+            )
+        rows.sort(key=lambda d: -d["score"])
+        return rows[:n]
     finally:
         con.close()

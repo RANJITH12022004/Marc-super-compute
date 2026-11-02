@@ -452,11 +452,66 @@ def _merge_cognee(query, text, hits, dataset=None):
     return text, hits
 
 
+def _rag_hits(query, limit=8):
+    """Always hit FTS + recent messages before spoken output."""
+    q = (query or "").strip() or "who am i"
+    text, hits = _index_search_text(q, limit=limit)
+    hits = list(hits or [])
+    idx = _load_index()
+    if idx is not None:
+        fn = getattr(idx, "search_messages", None)
+        if callable(fn):
+            try:
+                extra = fn(q, limit=limit)
+            except TypeError:
+                try:
+                    extra = fn(q)
+                except Exception:
+                    extra = []
+            except Exception:
+                extra = []
+            if isinstance(extra, list) and extra:
+                parts = []
+                for h in extra[:limit]:
+                    if not isinstance(h, dict):
+                        continue
+                    snip = str(h.get("snippet") or "")[:240]
+                    path = str(h.get("path") or "messages")
+                    parts.append("## %s\n\n%s" % (path, snip))
+                    hits.append(h)
+                if parts:
+                    block = "# chat memory\n\n" + "\n\n".join(parts)
+                    if text and text.strip():
+                        text = text.rstrip() + "\n\n---\n\n" + block
+                    else:
+                        text = block
+    return text or "", hits
+
+
+def _empty_brain_msg():
+    return (
+        "# brain empty\n\n"
+        "Brain empty — run ingest (`python -m ingest_all`) "
+        "or drop WA/IG exports, then reindex.",
+        [],
+    )
+
+
 def mind_recall(query=""):
-    """Recall markdown for a query -> {ok, text, hits}."""
+    """Recall markdown for a query -> {ok, text, hits}.
+
+    RAG-first: always search mind.sqlite FTS (+ messages) before returning
+    identity / utterance answers. Empty vault → honest empty message.
+    """
     q = query if isinstance(query, str) else str(query or "")
     low = q.lower()
-    wants_who = ("who am i" in low or "whoami" in low or "who_am_i" in low)
+    wants_who = (
+        "who am i" in low
+        or "whoami" in low
+        or "who_am_i" in low
+        or "what do you know about me" in low
+        or "know about me" in low
+    )
     wants_doing = (
         "what was i doing" in low
         or "what am i doing" in low
@@ -464,6 +519,9 @@ def mind_recall(query=""):
         or "what_was_i_doing" in low
     )
     try:
+        rag_q = q.strip() or ("who am i" if wants_who else "now")
+        rag_text, rag_hits = _rag_hits(rag_q, limit=8)
+
         if wants_who and wants_doing:
             t1, h1 = _who_am_i_text()
             t2, h2 = _what_was_i_doing_text()
@@ -477,13 +535,26 @@ def mind_recall(query=""):
             t2, h2 = _what_was_i_doing_text(limit=3)
             text, hits = t1 + "\n\n---\n\n" + t2, list(h1) + list(h2)
         else:
-            text, hits = _index_search_text(q)
+            text, hits = rag_text, rag_hits
+
+        # Merge RAG hits ahead of planner/spoken output.
+        if rag_text and rag_text.strip():
+            if text and text.strip() and rag_text.strip() not in text:
+                text = rag_text.rstrip() + "\n\n---\n\n" + text
+                hits = list(rag_hits or []) + list(hits or [])
+            elif not (text or "").strip():
+                text, hits = rag_text, rag_hits
+        elif not (hits or []) and not (text or "").strip():
+            text, hits = _empty_brain_msg()
+        elif wants_who and not rag_hits and "I don't know who you are" in (text or ""):
+            text, hits = _empty_brain_msg()
+
         if not wants_who:
             try:
                 text, hits = _merge_cognee(q or "now", text, hits)
             except Exception:
                 pass
-        return {"ok": True, "text": text, "hits": hits}
+        return {"ok": True, "text": text, "hits": hits or []}
     except Exception as exc:
         return {"ok": False, "text": "recall error: %s" % exc, "hits": []}
 
@@ -736,6 +807,7 @@ def mind_note(title="", body="", text="", **kw):
 
     low_t = title.lower()
     low_b = body.lower()
+    is_phone_settings = low_t.startswith("phone_settings") or "phone_settings" in low_t
     is_project = (
         low_t.startswith("project:")
         or low_t.startswith("project/")
@@ -745,6 +817,36 @@ def mind_note(title="", body="", text="", **kw):
         or "project:" in low_t
     )
     mind = _mind_dir()
+    if is_phone_settings:
+        slug = _slug(title, "phone_settings")
+        rel = "notes/%s.md" % slug
+        path = mind / "notes" / ("%s.md" % slug)
+        entry = "# %s\n\n%s\n" % (title, body)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(entry, encoding="utf-8")
+        except Exception as exc:
+            return {"ok": False, "text": "note error: %s" % exc, "path": "", "hits": []}
+        try:
+            vault = _load_vault()
+            if vault is not None and hasattr(vault, "merge_me_facts"):
+                snippet = body.strip().splitlines()
+                preview = "\n".join(snippet[:12])[:600]
+                vault.merge_me_facts({"phone": preview or title})
+        except Exception:
+            pass
+        try:
+            idx = _load_index()
+            if idx is not None and hasattr(idx, "rebuild"):
+                idx.rebuild(mind)
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "text": "Saved to %s" % rel,
+            "path": str(path),
+            "hits": [{"path": rel}],
+        }
     # Pre-compute rel + entry so vault.write_md can persist the same soul.
     if is_project:
         clean = re.sub(r"^(project\s*[:/\-]\s*|\[project\]\s*)", "", title, flags=re.I).strip() or "note"
@@ -841,9 +943,8 @@ def mind_note(title="", body="", text="", **kw):
 
 
 def who_am_i():
-    """Convenience for GET /whoami -> {ok, text, hits}."""
-    text, hits = _who_am_i_text()
-    return {"ok": True, "text": text, "hits": hits}
+    """Convenience for GET /whoami -> {ok, text, hits}. Always RAG-first."""
+    return mind_recall("who am i")
 
 
 __all__ = ["mind_recall", "mind_note", "who_am_i", "inject_context", "_cognee_remember"]

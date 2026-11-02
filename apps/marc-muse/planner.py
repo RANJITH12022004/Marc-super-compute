@@ -263,8 +263,18 @@ def _clause_to_tool(clause):
     if re.search(r"\b(take|photo|selfie|camera|picture)\b", low):
         return "camera_action", {"mode": "selfie" if "selfie" in low else "photo"}
 
-    if re.search(r"what was i doing|who am i|what.*(ip|address)", low):
-        return "mind_recall", {"query": c}
+    if re.search(
+        r"phone profile|snapshot phone|refresh my phone profile|phone settings snapshot",
+        low,
+    ):
+        return "phone_profile_snapshot", {}
+    if re.search(
+        r"what was i doing|who am i|what do you know about me|"
+        r"what.*(know|remember).*(about me|my)|my (chats|projects|repos)|"
+        r"what.*(ip|address)",
+        low,
+    ):
+        return "mind_recall", {"query": c, "rag_first": True}
     m = re.match(r"^remember\s+(.+)", c, re.I)
     if m:
         return "mind_note", {"text": m.group(1).strip()}
@@ -1014,6 +1024,7 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
         return local
 
     # Serializable context for spark (never pass live objects with methods).
+    # Identity / memory utterances force RAG before any spoken reply.
     spark_ctx = raw_context
     try:
         from brain import vault as _vault
@@ -1023,6 +1034,24 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
         me = _vault.who_am_i()
         now = _vault.what_was_i_doing()
         injected = _recall.inject_context(me, now, failed)
+        low_raw = (raw or "").lower()
+        force_rag = bool(
+            re.search(
+                r"who am i|what do you know about me|know about me|"
+                r"my (chats|projects|repos)|what.*(remember|know).*me",
+                low_raw,
+            )
+        )
+        if force_rag:
+            try:
+                rag = _recall.mind_recall(raw)
+                rag_text = ""
+                if isinstance(rag, dict):
+                    rag_text = str(rag.get("text") or "")
+                if rag_text.strip():
+                    injected = (injected or "") + "\n\n# rag\n\n" + rag_text[:3500]
+            except Exception:
+                pass
         if injected:
             if isinstance(spark_ctx, str) and spark_ctx.strip():
                 spark_ctx = injected + "\n" + spark_ctx

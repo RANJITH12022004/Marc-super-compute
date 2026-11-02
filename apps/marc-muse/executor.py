@@ -672,6 +672,8 @@ def _run_step(step, session_id, mind_dir, mode, send_tools, confirm_tools,
                 out = (res or {}).get("text") or "%s recorded." % tool
             except Exception as exc:
                 out = "%s error: %s" % (tool, exc)
+        elif tool == "phone_profile_snapshot":
+            out = "phone_profile_snapshot queued for device (one-shot Settings dump)."
         elif tool in (
             "open_url",
             "close_app",
