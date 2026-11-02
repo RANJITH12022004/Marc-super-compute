@@ -213,8 +213,14 @@ def seed() -> Path:
         base.mkdir(parents=True, exist_ok=True)
         (base / "people").mkdir(parents=True, exist_ok=True)
         (base / "style").mkdir(parents=True, exist_ok=True)
-        # ME.md — who Ranjith is (always ensure it exists with identity).
-        _atomic_write(base / "ME.md", _ME_DEFAULT)
+        # ME.md — create only if missing / empty (never clobber trained soul).
+        me_path = base / "ME.md"
+        try:
+            existing = me_path.read_text(encoding="utf-8") if me_path.exists() else ""
+        except Exception:
+            existing = ""
+        if not (existing or "").strip():
+            _atomic_write(me_path, _ME_DEFAULT)
         # NOW.md — only if missing so we never clobber live focus.
         now_path = base / "NOW.md"
         if not now_path.exists():
@@ -660,6 +666,43 @@ def save_note(title, body) -> Path:
     return write_md("notes/%s.md" % slug, text)
 
 
+def merge_me_facts(facts) -> str:
+    """Append/replace ## GitHub / ## Mail / ## Phone sections in ME.md.
+
+    Never wipes the rest of the soul. Returns the new ME.md text.
+    """
+    if not isinstance(facts, dict):
+        facts = {}
+    seed()
+    try:
+        text = read_md("ME.md") or ""
+    except Exception:
+        text = _ME_DEFAULT
+    if not (text or "").strip():
+        text = _ME_DEFAULT
+
+    def _upsert_section(body: str, heading: str, content: str) -> str:
+        if not content or not str(content).strip():
+            return body
+        block = "## %s\n\n%s\n" % (heading, str(content).strip())
+        pat = re.compile(
+            r"(?ms)^##\s+%s\s*\n.*?(?=^##\s|\Z)" % re.escape(heading)
+        )
+        if pat.search(body):
+            return pat.sub(block + "\n", body, count=1).rstrip() + "\n"
+        return body.rstrip() + "\n\n" + block
+
+    out = text
+    if facts.get("github"):
+        out = _upsert_section(out, "GitHub", facts.get("github"))
+    if facts.get("mail"):
+        out = _upsert_section(out, "Mail", facts.get("mail"))
+    if facts.get("phone"):
+        out = _upsert_section(out, "Phone", facts.get("phone"))
+    write_md("ME.md", out if out.endswith("\n") else out + "\n")
+    return out
+
+
 __all__ = [
     "MIND_DIR",
     "mind_dir",
@@ -676,4 +719,5 @@ __all__ = [
     "last_failed",
     "update_now_last",
     "save_note",
+    "merge_me_facts",
 ]

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +33,7 @@ __all__ = [
     "token_path",
     "search_mail",
     "summarize_thread",
+    "fetch_mail_digest",
     "compose",
     "calendar_list",
     "calendar_create",
@@ -433,6 +435,166 @@ def summarize_thread(thread_id: str | None = None, **kwargs) -> dict:
     except Exception as exc:
         return {"ok": False, "mode": "live", "id": tid,
                 "error": str(exc)[:300]}
+
+
+def fetch_mail_digest(
+    query: str = "",
+    pages: int = 2,
+    page_size: int = 10,
+    mind_dir: str | Path | None = None,
+    **kwargs,
+) -> dict:
+    """Bulk-fetch mail digests into ``notes/mail/`` (sandbox-capped).
+
+    Live uses Gmail list+metadata; sandbox writes FAKE fixtures. Caps pages
+    so we never store unbounded raw forever. Merges a short Mail section
+    into ME.md via ``merge_me_facts``.
+    """
+    q = str(query if query is not None else kwargs.get("q", "") or "").strip()
+    try:
+        n_pages = max(1, min(int(pages), 5 if get_mode() == "live" else 2))
+    except Exception:
+        n_pages = 2
+    try:
+        per = max(1, min(int(page_size), 25))
+    except Exception:
+        per = 10
+    base = Path(mind_dir) if mind_dir else Path(
+        (os.environ.get("MARC_MIND_DIR") or os.environ.get("MIND_DIR") or "./var/mind").strip()
+        or "./var/mind"
+    )
+    out_dir = base / "notes" / "mail"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    rows: list[dict] = []
+    mode = get_mode()
+    if mode != "live" or not has_token():
+        mode = "sandbox"
+        for t in _FAKE_THREADS:
+            rows.append(
+                {
+                    "id": t["id"],
+                    "subject": t.get("subject", ""),
+                    "from_": t.get("from_", ""),
+                    "snippet": t.get("snippet", ""),
+                }
+            )
+    else:
+        token = _read_token()
+        page_token = None
+        for _ in range(n_pages):
+            params = {"maxResults": per}
+            if q:
+                params["q"] = q
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                data = _api_request(
+                    "GET",
+                    _GMAIL_BASE + "/users/me/messages",
+                    token,
+                    params=params,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "mode": "live",
+                    "error": str(exc)[:300],
+                    "written": 0,
+                }
+            msgs = data.get("messages", []) if isinstance(data, dict) else []
+            for m in msgs or []:
+                mid = str((m or {}).get("id") or "")
+                if not mid:
+                    continue
+                try:
+                    meta = _api_request(
+                        "GET",
+                        _GMAIL_BASE + "/users/me/messages/" + urllib.parse.quote(mid),
+                        token,
+                        params={"format": "metadata", "metadataHeaders": "Subject,From"},
+                    )
+                except Exception:
+                    meta = {}
+                headers = {}
+                payload = meta.get("payload") if isinstance(meta, dict) else {}
+                if isinstance(payload, dict):
+                    for h in payload.get("headers") or []:
+                        if isinstance(h, dict) and h.get("name"):
+                            headers[str(h["name"]).lower()] = str(h.get("value") or "")
+                rows.append(
+                    {
+                        "id": mid,
+                        "subject": headers.get("subject", ""),
+                        "from_": headers.get("from", ""),
+                        "snippet": str((meta or {}).get("snippet") or "")[:400],
+                    }
+                )
+            page_token = (data or {}).get("nextPageToken") if isinstance(data, dict) else None
+            if not page_token:
+                break
+            if len(rows) >= n_pages * per:
+                break
+
+    written = 0
+    lines = []
+    for i, row in enumerate(rows[: n_pages * per]):
+        mid = str(row.get("id") or ("m%d" % i))
+        safe = re.sub(r"[^a-z0-9._-]+", "-", mid.lower()).strip("-")[:60] or ("m%d" % i)
+        body = (
+            "# Mail digest\n\n"
+            "- Id: %s\n"
+            "- From: %s\n"
+            "- Subject: %s\n\n"
+            "%s\n"
+            % (
+                mid,
+                row.get("from_") or "",
+                row.get("subject") or "",
+                (row.get("snippet") or "")[:800],
+            )
+        )
+        try:
+            (out_dir / ("%s.md" % safe)).write_text(body, encoding="utf-8")
+            written += 1
+        except Exception:
+            continue
+        lines.append(
+            "- %s — %s"
+            % ((row.get("subject") or mid)[:80], (row.get("from_") or "")[:60])
+        )
+
+    section = "Recent mail digests:\n\n" + (
+        "\n".join(lines[:20]) if lines else "- (none yet)"
+    )
+    try:
+        import sys
+
+        muse = str(Path(__file__).resolve().parents[1])
+        if muse not in sys.path:
+            sys.path.insert(0, muse)
+        from brain import vault as _vault  # type: ignore
+
+        _vault.merge_me_facts({"mail": section})
+    except Exception:
+        pass
+    try:
+        from brain import index as _idx  # type: ignore
+
+        _idx.rebuild(base)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "mode": mode,
+        "written": written,
+        "count": written,
+        "query": q,
+        "path": str(out_dir),
+    }
 
 
 def compose(to: str = "", subject: str = "", body: str = "",

@@ -102,7 +102,7 @@ def _mind_dir_from_payload(payload: dict) -> str:
 
 
 def _run_mind_job(kind: str, payload: dict) -> dict:
-    """Run mind_ingest / mind_reindex / style_distill under mind dir only."""
+    """Run mind_* / laptop_home_ingest under mind dir only."""
     mind = _mind_dir_from_payload(payload)
     if not mind:
         return {"ok": False, "error": "unsafe mind_dir refused", "kind": kind}
@@ -137,6 +137,21 @@ def _run_mind_job(kind: str, payload: dict) -> dict:
                         _ingest.ingest_path(path)
                 except Exception as exc:
                     detail = "ingest err: %s" % str(exc)[:120]
+            source = str(payload.get("source") or "").strip().lower()
+            if source in ("github", "gh", "all"):
+                try:
+                    from connectors import github as _gh  # type: ignore
+
+                    _gh.ingest_repos(mind_dir=mind)
+                except Exception as exc:
+                    detail = (detail + "; " if detail else "") + "github: %s" % str(exc)[:80]
+            if source in ("gmail", "mail", "google", "all"):
+                try:
+                    from connectors import google as _google  # type: ignore
+
+                    _google.fetch_mail_digest(mind_dir=mind)
+                except Exception as exc:
+                    detail = (detail + "; " if detail else "") + "mail: %s" % str(exc)[:80]
             n = _idx.rebuild(mind)
             _idx.record_job(job_id, kind, "done", path or mind, mind_dir=mind)
             detail = detail or ("ingest+reindex %s" % n)
@@ -154,6 +169,35 @@ def _run_mind_job(kind: str, payload: dict) -> dict:
             _idx.ensure_schema(mind)
             _idx.record_job(job_id, kind, "done", path or mind, mind_dir=mind)
             detail = detail or "style_distill ok"
+        elif kind == "laptop_home_ingest":
+            from brain import index as _idx  # type: ignore
+            from brain import laptop_ingest as _li  # type: ignore
+
+            home = str(payload.get("home") or payload.get("root") or "").strip() or None
+            if home and not _is_safe_workdir(home):
+                return {"ok": False, "error": "unsafe home refused", "kind": kind}
+            res = _li.walk_home(root=home, mind_dir=mind)
+            count = 0
+            if isinstance(res, dict):
+                try:
+                    count = int(res.get("count") or res.get("ingested") or 0)
+                except Exception:
+                    count = 0
+                detail = str(res.get("error") or ("laptop ingested %s" % count))
+            else:
+                detail = "laptop_home_ingest ok"
+            _idx.record_job(job_id, kind, "done" if (isinstance(res, dict) and res.get("ok", True)) else "error",
+                            home or mind, mind_dir=mind)
+            return {
+                "ok": bool(isinstance(res, dict) and res.get("ok", True)),
+                "kind": kind,
+                "status": "done",
+                "text": detail,
+                "summary": detail,
+                "mind_dir": mind,
+                "id": job_id,
+                "result": res if isinstance(res, dict) else {},
+            }
         else:
             return {"ok": False, "error": "unknown kind", "kind": kind}
     except Exception as exc:
@@ -242,7 +286,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/run":
             payload = _read_json(self)
             kind = str(payload.get("kind") or payload.get("job") or "").strip().lower()
-            if kind in ("mind_ingest", "mind_reindex", "style_distill"):
+            if kind in (
+                "mind_ingest",
+                "mind_reindex",
+                "style_distill",
+                "laptop_home_ingest",
+            ):
                 self._send(_run_mind_job(kind, payload))
                 return
             goal = payload.get("goal", "")
