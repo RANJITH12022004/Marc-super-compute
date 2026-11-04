@@ -17,6 +17,7 @@ Deny (any match skips the file; denied dirs are pruned):
     - ``browser`` in any path component
     - ``Login Data`` files (Chrome)
     - ``local.properties`` files (Android)
+    - ``AppData``, ``.gradle``, Android SDK trees, ``.cache``, venvs, build dirs
 
 Allow (plus size cap):
     - extensions ``.md`` ``.txt`` ``.py`` ``.java``
@@ -55,6 +56,9 @@ MAX_FILE_BYTES = 200_000
 SIZE_CAP = MAX_FILE_BYTES
 MAX_BYTES = MAX_FILE_BYTES
 MAX_SIZE = MAX_FILE_BYTES
+
+# Hard cap so a full-home walk cannot flood the vault with SDK junk.
+MAX_INGEST_FILES = 400
 
 DIGEST_LIMIT = 8000
 TRUNCATE_LIMIT = DIGEST_LIMIT
@@ -148,6 +152,41 @@ def is_denied(rel_posix: str) -> str | None:
     # local.properties (Android)
     if low_name == "local.properties":
         return "local.properties"
+    # Windows / tool junk — never personal memory.
+    for junk in (
+        "appdata",
+        ".gradle",
+        ".android",
+        "android sdk",
+        "androidsdk",
+        "sdk",
+        ".cargo",
+        ".rustup",
+        ".npm",
+        ".cache",
+        ".nuget",
+        ".vscode",
+        ".cursor",
+        "node_modules",
+        "site-packages",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "build",
+        "dist",
+        ".idea",
+    ):
+        if junk in low_parts:
+            # Keep bare "sdk" only when path looks like Android SDK tree.
+            if junk == "sdk":
+                joined = "/".join(low_parts)
+                if "android" in joined or "build-tools" in joined or "platform-tools" in joined:
+                    return "sdk"
+                continue
+            return junk
+    if "android" in low_parts and ("sources" in low_parts or "platforms" in low_parts
+                                    or "build-tools" in low_parts or "emulator" in low_parts):
+        return "android-sdk"
     return None
 
 
@@ -386,6 +425,12 @@ def walk_home(root=None, mind_dir=None, **kwargs) -> dict:
                 notes.append(str(dest))
             except Exception:
                 notes.append(rel)
+            if len(files) >= MAX_INGEST_FILES:
+                # Stop walk early — prune remaining dirs.
+                dirnames[:] = []
+                break
+        if len(files) >= MAX_INGEST_FILES:
+            break
 
     chunks = 0
     rebuild_error = ""
@@ -407,6 +452,7 @@ def walk_home(root=None, mind_dir=None, **kwargs) -> dict:
         "denied": denied,
         "oversized": oversized,
         "disallowed": disallowed,
+        "capped": len(files) >= MAX_INGEST_FILES,
         "chunks": chunks,
     }
     if rebuild_error:

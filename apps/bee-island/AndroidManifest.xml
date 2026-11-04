@@ -36,6 +36,12 @@
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="mailto" />
         </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
         <package android:name="com.spotify.music" />
         <package android:name="com.instagram.android" />
         <package android:name="com.whatsapp" />
@@ -60,6 +66,10 @@
         <package android:name="com.csam.icici.bank.imobile" />
         <package android:name="com.axis.mobile" />
         <package android:name="com.bankofbaroda.neobanking" />
+        <package android:name="com.termux" />
+        <package android:name="com.termux.api" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.tts" />
     </queries>
 
     <application

@@ -119,11 +119,14 @@ class ClosedLoopHandsTest(unittest.TestCase):
         leftover = router[router.find("static void leftover") : router.find("static void actOrConfirm")]
         self.assertIn("actOrConfirm", leftover)
         self.assertIn("splitUtterance", leftover)
-        empty_idx = leftover.find("if (!phoneSteps.isEmpty())")
+        self.assertIn("sparkPhone", leftover)
+        self.assertIn("KeyVault.hasKey", leftover)
+        self.assertNotIn("Planning offline", leftover)
+        spark_idx = leftover.find("sparkPhone")
         split_idx = leftover.find("splitUtterance")
         act_idx = leftover.rfind("actOrConfirm")
-        self.assertGreater(empty_idx, 0)
-        self.assertGreater(split_idx, empty_idx)
+        self.assertGreater(spark_idx, 0)
+        self.assertGreater(split_idx, spark_idx)
         self.assertGreater(act_idx, split_idx)
 
     def test_reels_auto_scroll_until_stop(self):
@@ -216,7 +219,7 @@ class ClosedLoopHandsTest(unittest.TestCase):
         self.assertIn("IslandPillView", service)
         self.assertIn("HydrationHeroView", service)
         self.assertIn("onPaymentHidden", service)
-        self.assertIn("Didn't catch that. Try again.", service)
+        self.assertIn("Missed that", service)
         pill = _read("IslandPillView.java")
         self.assertIn("STATE_LISTENING", pill)
         self.assertIn("STATE_HIDDEN", pill)
@@ -233,7 +236,7 @@ class ClosedLoopHandsTest(unittest.TestCase):
         ask = _read("BeeAsk.java")
         self.assertIn("chat_touch", ask)
         router = _read("AskRouter.java")
-        self.assertIn("Say confirm to send.", router)
+        self.assertIn("Say yes to send.", router)
 
     def test_phone_profile_snapshot_tool(self):
         step = bee_control.clause_to_tool("refresh my phone profile")

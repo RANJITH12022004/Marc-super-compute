@@ -28,7 +28,7 @@ public final class IslandTouch {
     public static final int HIT_SLOP_DP = 24;
 
     /** Listening tap debounce window (ms). */
-    public static final int LISTEN_TIMEOUT_MS = 8000;
+    public static final int LISTEN_TIMEOUT_MS = 20000;
 
     /** Hold-to-open threshold (ms). */
     public static final int HOLD_MS = 2000;
@@ -111,7 +111,7 @@ public final class IslandTouch {
      * Tap dispatch.
      *
      * <ul>
-     *   <li>if confirming return "cancel"</li>
+     *   <li>if confirming return "confirm" (tap = yes)</li>
      *   <li>else if listening and age &lt; TAP_IGNORE_MS return "ignore"</li>
      *   <li>else if listening and age &gt;= TAP_IGNORE_MS return "restart_listen"</li>
      *   <li>else return "start_listen"</li>
@@ -119,7 +119,7 @@ public final class IslandTouch {
      */
     public static String onTap(boolean listening, boolean confirming, long listeningAgeMs) {
         if (confirming) {
-            return "cancel";
+            return "confirm";
         }
         if (listening) {
             if (listeningAgeMs < (long) TAP_IGNORE_MS) {

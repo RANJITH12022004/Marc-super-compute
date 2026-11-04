@@ -306,6 +306,86 @@ def clause_to_tool(clause):
         if m2:
             who = (m2.group(1) or '').strip()
         return _ToolResult('suggest_reply', {'to': who}, device)
+    if re.search(r'\blast\b.*\bchats?\b|\bb\s+chats?\b|business\s+whatsapp|list\s+chats|show\s+chats', low_raw):
+        return _ToolResult(
+            'wa_list_chats',
+            {'limit': '30', 'package': 'com.whatsapp.w4b'},
+            device,
+        )
+    m = re.match(
+        r'^\s*(?:script|draft|write)\s+(?:an?\s+)?(?:sms|text\s+message)\s+'
+        r'(?:to\s+)?(.+?)\s+(?:saying|that|about|regarding|re|:|—|-)\s*(.+)$',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        args = {
+            'to': (m.group(1) or '').strip(),
+            'topic': (m.group(2) or '').strip(),
+            'channel': 'sms',
+        }
+        return _ToolResult('chat_touch', args, device)
+    m = re.match(
+        r'^\s*(?:script|draft|write)\s+(?:an?\s+)?(?:email|mail)\s+'
+        r'(?:to\s+)?(.+?)\s+(?:saying|that|about|regarding|re|:|—|-)\s*(.+)$',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        args = {
+            'to': (m.group(1) or '').strip(),
+            'topic': (m.group(2) or '').strip(),
+            'channel': 'mail',
+        }
+        return _ToolResult('chat_touch', args, device)
+    m = re.match(
+        r'^\s*(?:script|draft|write)\s+(?:a\s+)?(?:whatsapp\s+|wa\s+)?'
+        r'(?:message|msg|text)\s+(?:to\s+)?(.+?)\s+'
+        r'(?:saying|that|about|regarding|re|:|—|-)\s*(.+)$',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        pkg = 'com.whatsapp' if ('personal whatsapp' in low_raw or 'my whatsapp' in low_raw) else 'com.whatsapp.w4b'
+        channel = 'whatsapp'
+        if 'sms' in low_raw or 'text message' in low_raw:
+            channel = 'sms'
+        elif 'email' in low_raw or 'mail' in low_raw:
+            channel = 'mail'
+        args = {
+            'to': (m.group(1) or '').strip(),
+            'topic': (m.group(2) or '').strip(),
+            'channel': channel,
+        }
+        if channel == 'whatsapp':
+            args['package'] = pkg
+        return _ToolResult('chat_touch', args, device)
+    m = re.match(
+        r'^\s*(?:script|draft|write)\s+(?:a\s+)?(?:message|msg|text)\s+(?:to\s+)?(\S+)(?:\s+(.*))?$',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        pkg = 'com.whatsapp' if ('personal whatsapp' in low_raw or 'my whatsapp' in low_raw) else 'com.whatsapp.w4b'
+        rest = (m.group(2) or '').strip() if m.group(2) is not None else ''
+        channel = 'whatsapp'
+        if 'sms' in low_raw:
+            channel = 'sms'
+        elif 'email' in low_raw or 'mail' in low_raw:
+            channel = 'mail'
+        args = {
+            'to': (m.group(1) or '').strip(),
+            'topic': rest,
+            'channel': channel,
+        }
+        if channel == 'whatsapp':
+            args['package'] = pkg
+        return _ToolResult('chat_touch', args, device)
+    m = re.match(r'^\s*(?:sms|text\s+message)\s+(\S+)(?:\s+(.*))?$', cleaned, flags=re.IGNORECASE)
+    if m:
+        rest = (m.group(2) or '').strip() if m.group(2) is not None else ''
+        args = {'to': (m.group(1) or '').strip(), 'text': rest}
+        return _ToolResult('sms_send', args, device)
     m = re.match(r'^\s*(?:text|whatsapp)\s+(.+?)\s+(marc\s+test)\s*$', cleaned, flags=re.IGNORECASE)
     if m:
         pkg = 'com.whatsapp' if ('personal whatsapp' in low_raw or 'my whatsapp' in low_raw) else 'com.whatsapp.w4b'
@@ -531,7 +611,7 @@ def classify_voice(text):
     if 'reboot' in low or 'shutdown' in low or 'sudo' in low or 'poweroff' in low or 'rm -rf' in low:
         return {'kind': 'refuse'}
     stripped = _strip_voice(text)
-    if stripped in ('yes', 'yeah', 'yep', 'ok', 'okay', 'send it', 'do it', 'go ahead', 'that'):
+    if stripped in ('yes', 'yeah', 'yep', 'ok', 'okay', 'confirm', 'send', 'send it', 'do it', 'go ahead', 'please', 'that'):
         return {'kind': 'confirm'}
     if stripped in ('no', 'nope', 'cancel', 'stop'):
         return {'kind': 'cancel'}
@@ -597,12 +677,25 @@ def this_or_that(steps):
             label = ('play %s' % q).strip() if q else 'play music'
         elif t == 'whatsapp_send':
             to = ''
+            text = ''
             try:
                 to = str(args.get('to', '') or '').strip()
             except Exception:
                 to = ''
+            try:
+                text = str(args.get('text', '') or args.get('body', '') or '').strip()
+            except Exception:
+                text = ''
             to = re.sub(r'\s+', ' ', to).strip()
-            label = ('text %s' % to).strip() if to else 'send text'
+            text = re.sub(r'\s+', ' ', text).strip()
+            if to and text:
+                label = ('text %s: %s' % (to, text)).strip()
+            elif to:
+                label = ('text %s' % to).strip()
+            elif text:
+                label = ('send: %s' % text).strip()
+            else:
+                label = 'send text'
         elif t == 'mail_compose':
             to = ''
             try:

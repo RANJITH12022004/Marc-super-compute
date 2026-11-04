@@ -21,8 +21,10 @@ import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /** Accessibility host that lets the pill use TYPE_ACCESSIBILITY_OVERLAY. */
 public class IslandAccess extends AccessibilityService {
@@ -30,6 +32,7 @@ public class IslandAccess extends AccessibilityService {
     private static WeakReference<IslandAccess> self;
 
     private View pill;
+    private final List<View> overlayViews = new ArrayList<View>();
 
     static boolean typeFocused(String text) {
         IslandAccess svc = self == null ? null : self.get();
@@ -471,6 +474,9 @@ public class IslandAccess extends AccessibilityService {
     }
 
     static boolean clickChatRow(String name) {
+        if (clickChatRowFuzzy(name) != null) {
+            return true;
+        }
         IslandAccess svc = self == null ? null : self.get();
         if (svc == null || name == null) {
             return false;
@@ -505,6 +511,169 @@ public class IslandAccess extends AccessibilityService {
         } catch (Exception ignored) {
         }
         return ok;
+    }
+
+    /**
+     * Fuzzy chat-row click. Returns matched display label, or null.
+     */
+    static String clickChatRowFuzzy(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return null;
+        }
+        List<String> labels = listChatTitles(40);
+        ContactMatch.Hit hit = ContactMatch.bestMatch(name.trim(), labels,
+                ContactMatch.DEFAULT_THRESHOLD);
+        if (hit == null || hit.label.isEmpty()) {
+            return null;
+        }
+        // Prefer exact label click via contains path on first token.
+        String token = hit.label;
+        int cut = token.indexOf('\n');
+        if (cut > 0) {
+            token = token.substring(0, cut);
+        }
+        cut = token.indexOf('·');
+        if (cut > 0) {
+            token = token.substring(0, cut);
+        }
+        token = token.trim();
+        if (token.isEmpty()) {
+            token = hit.label;
+        }
+        IslandAccess svc = self == null ? null : self.get();
+        if (svc == null) {
+            return null;
+        }
+        AccessibilityNodeInfo root = null;
+        try {
+            root = svc.getRootInActiveWindow();
+        } catch (Exception ignored) {
+            return null;
+        }
+        if (root == null) {
+            return null;
+        }
+        String want = token.toLowerCase(Locale.US);
+        AccessibilityNodeInfo node = findChatRow(root, want, true);
+        if (node == null) {
+            node = findChatRow(root, want, false);
+        }
+        boolean ok = false;
+        if (node != null) {
+            ok = clickClickableAncestor(node);
+            try {
+                node.recycle();
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            root.recycle();
+        } catch (Exception ignored) {
+        }
+        return ok ? hit.label : null;
+    }
+
+    /** Visible chat-list style titles (unique, capped). */
+    static List<String> listChatTitles(int limit) {
+        List<String> raw = new ArrayList<String>();
+        IslandAccess svc = self == null ? null : self.get();
+        if (svc == null) {
+            return raw;
+        }
+        AccessibilityNodeInfo root = null;
+        try {
+            root = svc.getRootInActiveWindow();
+        } catch (Exception ignored) {
+            return raw;
+        }
+        if (root == null) {
+            return raw;
+        }
+        try {
+            collectChatTitles(root, raw, limit <= 0 ? 30 : limit);
+        } catch (Exception ignored) {
+        }
+        try {
+            root.recycle();
+        } catch (Exception ignored) {
+        }
+        return ContactMatch.uniqueLabels(raw);
+    }
+
+    private static void collectChatTitles(AccessibilityNodeInfo node, List<String> out, int limit) {
+        if (node == null || out == null || out.size() >= limit) {
+            return;
+        }
+        try {
+            if (node.isVisibleToUser()) {
+                String label = nodeLabel(node).trim();
+                if (!label.isEmpty() && !isSearchOrEdit(node)
+                        && label.length() < 80
+                        && !label.equalsIgnoreCase("Chats")
+                        && !label.equalsIgnoreCase("Status")
+                        && !label.equalsIgnoreCase("Calls")
+                        && !label.toLowerCase(Locale.US).contains("search")
+                        && !label.toLowerCase(Locale.US).startsWith("from ")) {
+                    // Prefer short contact-like lines (name + optional preview).
+                    if (label.contains("\n") || label.length() <= 48 || label.contains("·")) {
+                        out.add(label.split("\n")[0].trim());
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        int n = 0;
+        try {
+            n = node.getChildCount();
+        } catch (Exception ignored) {
+            n = 0;
+        }
+        for (int i = 0; i < n && out.size() < limit; i++) {
+            AccessibilityNodeInfo child = null;
+            try {
+                child = node.getChild(i);
+            } catch (Exception ignored) {
+                child = null;
+            }
+            if (child == null) {
+                continue;
+            }
+            collectChatTitles(child, out, limit);
+            try {
+                child.recycle();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** Lightweight observe for closed-loop. */
+    static Map<String, Object> observe() {
+        Map<String, Object> out = new HashMap<String, Object>();
+        IslandAccess svc = self == null ? null : self.get();
+        String pkg = "";
+        try {
+            if (svc != null && svc.getRootInActiveWindow() != null) {
+                AccessibilityNodeInfo root = svc.getRootInActiveWindow();
+                try {
+                    CharSequence p = root.getPackageName();
+                    if (p != null) {
+                        pkg = p.toString();
+                    }
+                } catch (Exception ignored) {
+                }
+                List<String> labs = new ArrayList<String>();
+                collectVisibleText(root, labs);
+                out.put("hasText", labs);
+                try {
+                    root.recycle();
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        out.put("foregroundPkg", pkg);
+        out.put("ok", Boolean.TRUE);
+        return out;
     }
 
     private static AccessibilityNodeInfo findChatRow(AccessibilityNodeInfo node, String want) {
@@ -1727,6 +1896,88 @@ public class IslandAccess extends AccessibilityService {
         }
     }
 
+    /**
+     * Show an arbitrary view on TYPE_ACCESSIBILITY_OVERLAY (same path as the pill).
+     * Returns true when attached.
+     */
+    boolean showOverlayView(View view, int w, int h, int x, int y, boolean touchable) {
+        if (view == null) {
+            return false;
+        }
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (wm == null) {
+                return false;
+            }
+            int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                    | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
+            if (!touchable) {
+                flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            } else {
+                flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            }
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    w,
+                    h,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    flags,
+                    PixelFormat.TRANSLUCENT);
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.x = Math.max(0, x);
+            lp.y = Math.max(0, y);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            }
+            try {
+                wm.removeView(view);
+            } catch (Exception ignored) {
+            }
+            wm.addView(view, lp);
+            if (!overlayViews.contains(view)) {
+                overlayViews.add(view);
+            }
+            return true;
+        } catch (Exception e) {
+            Log.e("BeeIsland", "showOverlayView failed", e);
+            return false;
+        }
+    }
+
+    void hideOverlayView(View view) {
+        if (view == null) {
+            return;
+        }
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (wm != null) {
+                wm.removeView(view);
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            overlayViews.remove(view);
+        } catch (Exception ignored) {
+        }
+    }
+
+    static boolean showOverlay(View view, int w, int h, int x, int y, boolean touchable) {
+        IslandAccess svc = self == null ? null : self.get();
+        if (svc == null) {
+            return false;
+        }
+        return svc.showOverlayView(view, w, h, x, y, touchable);
+    }
+
+    static void hideOverlay(View view) {
+        IslandAccess svc = self == null ? null : self.get();
+        if (svc == null) {
+            return;
+        }
+        svc.hideOverlayView(view);
+    }
+
     @Override
     public void onServiceConnected() {
         self = new WeakReference<IslandAccess>(this);
@@ -1785,9 +2036,8 @@ public class IslandAccess extends AccessibilityService {
             hidePill();
             IslandService.onPaymentHidden(true);
         } else if (!pay && was) {
-            if (pkg != null && pkg.contains("bee.island")) {
-                return;
-            }
+            // Always clear gate on a verified non-payment package (including
+            // bee.island). Leaving it hidden blocks the pill/mic forever.
             PaymentGate.setHidden(false);
             IslandService.onPaymentHidden(false);
             IslandService.requestPill(this);

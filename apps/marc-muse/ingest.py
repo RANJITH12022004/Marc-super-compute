@@ -442,30 +442,53 @@ def _call_distill(person: str, channel: str, messages: list[dict]):
     fn = getattr(mod, "distill", None)
     if not callable(fn):
         return None
-    # Primary contract: distill(person, channel, messages).
+    # style.distill(messages, channel="", person_slug="")
+    md = None
     try:
-        return fn(person, channel, messages)
+        md = fn(messages, channel, person)
     except TypeError:
-        pass
+        md = None
     except Exception:
         return None
+    if md is None:
+        try:
+            md = fn(messages=messages, channel=channel, person_slug=person)
+        except TypeError:
+            md = None
+        except Exception:
+            return None
+    if md is None:
+        try:
+            md = fn(person=person, channel=channel, messages=messages)
+        except Exception:
+            return None
+    if not isinstance(md, str) or not md.strip():
+        return md
+    # Persist style card + light people stub from sender metadata.
+    write_fn = getattr(mod, "write_card", None)
+    if callable(write_fn):
+        try:
+            write_fn(channel, person, md)
+        except Exception:
+            pass
     try:
-        return fn(person=person, channel=channel, messages=messages)
-    except TypeError:
+        from brain import vault as _vault  # type: ignore
+        slug_fn = getattr(mod, "_safe_slug", None)
+        slug = slug_fn(person, "untitled") if callable(slug_fn) else str(person or "untitled")
+        existing = ""
+        try:
+            existing = _vault.read_md("people/%s.md" % slug) or ""
+        except Exception:
+            existing = ""
+        if not str(existing).strip():
+            body = (
+                "# %s\n\n- Channel: %s\n- Relation: contact\n- Notes: auto from ingest\n"
+                % (slug.replace("_", " ").title(), channel)
+            )
+            _vault.upsert_person(slug, body)
+    except Exception:
         pass
-    except Exception:
-        return None
-    try:
-        texts = [str(m.get("text", "")) for m in messages]
-        return fn(person, channel, texts)
-    except TypeError:
-        pass
-    except Exception:
-        return None
-    try:
-        return fn({"person": person, "channel": channel, "messages": messages})
-    except Exception:
-        return None
+    return md
 
 
 # ---------------------------------------------------------------- ingest ---

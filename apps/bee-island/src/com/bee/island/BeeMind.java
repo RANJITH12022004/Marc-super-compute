@@ -94,12 +94,102 @@ public class BeeMind {
         return spoken;
     }
 
+    /** True when door/Muse says the vault was never ingested. */
+    static boolean isEmptyBrainText(String body) {
+        if (body == null) {
+            return true;
+        }
+        String low = body.trim().toLowerCase(Locale.US);
+        if (low.isEmpty()) {
+            return true;
+        }
+        return low.contains("brain empty") || low.contains("run ingest");
+    }
+
+    /** Seed filesDir/bee_mind from APK assets when cache is missing. */
+    static void ensureSeeded(Context context) {
+        if (context == null) {
+            return;
+        }
+        try {
+            String me = readCache(context, "ME.md");
+            if (me == null || me.trim().isEmpty()) {
+                String asset = readAsset(context, "mind/ME.md");
+                if (asset != null && !asset.trim().isEmpty()) {
+                    writeCache(context, "ME.md", asset.trim());
+                }
+            }
+            String now = readCache(context, "NOW.md");
+            if (now == null || now.trim().isEmpty()) {
+                String asset = readAsset(context, "mind/NOW.md");
+                if (asset != null && !asset.trim().isEmpty()) {
+                    writeCache(context, "NOW.md", asset.trim());
+                }
+            }
+            seedStyleAssets(context);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Copy mind/style and mind/people trees from assets when missing on disk. */
+    private static void seedStyleAssets(Context context) {
+        if (context == null) {
+            return;
+        }
+        try {
+            seedAssetTree(context, "mind/style", "style");
+            seedAssetTree(context, "mind/people", "people");
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void seedAssetTree(Context context, String assetDir, String relOut) {
+        String[] names;
+        try {
+            names = context.getAssets().list(assetDir);
+        } catch (Exception e) {
+            return;
+        }
+        if (names == null || names.length == 0) {
+            return;
+        }
+        for (int i = 0; i < names.length; i++) {
+            String name = names[i];
+            if (name == null || name.isEmpty()) {
+                continue;
+            }
+            String childAsset = assetDir + "/" + name;
+            String childRel = relOut + "/" + name;
+            String[] nested = null;
+            try {
+                nested = context.getAssets().list(childAsset);
+            } catch (Exception ignored) {
+            }
+            if (nested != null && nested.length > 0) {
+                seedAssetTree(context, childAsset, childRel);
+                continue;
+            }
+            try {
+                File dest = new File(mindDir(context), childRel);
+                if (dest.isFile() && dest.length() > 0) {
+                    continue;
+                }
+                String body = readAsset(context, childAsset);
+                if (body != null && !body.trim().isEmpty()) {
+                    writeCache(context, childRel, body.trim());
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     public static String whoAmI(Context context) {
+        ensureSeeded(context);
         String cached = readCache(context, "ME.md");
         try {
             if (context != null && RoxClient.reachable(context)) {
                 String body = RoxClient.getWhoami(context);
-                if (body != null && !body.trim().isEmpty()) {
+                if (body != null && !isEmptyBrainText(body)) {
                     String clean = body.trim();
                     writeCache(context, "ME.md", clean);
                     return clean;
@@ -111,11 +201,12 @@ public class BeeMind {
     }
 
     public static String whatWasIDoing(Context context) {
+        ensureSeeded(context);
         String cached = readCache(context, "NOW.md");
         try {
             if (context != null && RoxClient.reachable(context)) {
                 String body = RoxClient.getMind(context, "now");
-                if (body != null && !body.trim().isEmpty()) {
+                if (body != null && !isEmptyBrainText(body)) {
                     String clean = body.trim();
                     writeCache(context, "NOW.md", clean);
                     return clean;
@@ -288,13 +379,15 @@ public class BeeMind {
             if (me.isEmpty() && RoxClient.reachable(context)) {
                 try {
                     String mind = RoxClient.getMind(context, text);
-                    me = speakable(mind);
+                    if (!isEmptyBrainText(mind)) {
+                        me = speakable(mind);
+                    }
                 } catch (Exception ignored) {
                     me = "";
                 }
             }
             if (me.isEmpty()) {
-                // Let AskRouter leftover hit Muse /utterance (RAG-first).
+                // Seeded ME still empty → Muse leftover; never invent "Unknown".
                 return false;
             }
             AskRouter.speak(context, me);
@@ -309,7 +402,9 @@ public class BeeMind {
             if (now.isEmpty() && RoxClient.reachable(context)) {
                 try {
                     String mind = RoxClient.getMind(context, text);
-                    now = speakable(mind);
+                    if (!isEmptyBrainText(mind)) {
+                        now = speakable(mind);
+                    }
                 } catch (Exception ignored) {
                     now = "";
                 }
@@ -424,6 +519,26 @@ public class BeeMind {
             return null;
         }
         return new File(base, "bee_mind");
+    }
+
+    private static String readAsset(Context context, String path) {
+        if (context == null || path == null || path.trim().isEmpty()) {
+            return "";
+        }
+        InputStream in = null;
+        try {
+            in = context.getAssets().open(path);
+            return readAll(in).trim();
+        } catch (Exception ignored) {
+            return "";
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     private static String readCache(Context context, String name) {

@@ -29,6 +29,8 @@ public final class BeeAsk {
                     "dial",
                     "instagram_send",
                     "sms_send",
+                    "mail_compose",
+                    "mail_send",
                     "calendar_create",
                     "open_food_search")));
 
@@ -170,7 +172,7 @@ public final class BeeAsk {
             return "Listening…";
         }
         if ("plan".equals(state)) {
-            return "Planning…";
+            return "On it.";
         }
         if ("confirm".equals(state)) {
             return "Say yes or cancel.";
@@ -179,7 +181,7 @@ public final class BeeAsk {
             return "Done.";
         }
         if ("fail".equals(state)) {
-            return "Failed.";
+            return "That didn't land.";
         }
         if ("wave".equals(state)) {
             if (agents == null || agents.isEmpty()) {
@@ -218,7 +220,16 @@ public final class BeeAsk {
         if (low.contains("email")) {
             return false;
         }
-        // Text/WA: local only when contact looks real; vague → Muse leftover.
+        // Text/WA/script: local only when contact looks real; vague → Muse leftover.
+        // Hands / chats / script → Muse-first (AskRouter); skipMuse stays false for those.
+        if (low.contains("last") && (low.contains("chat") || low.contains("chats"))
+                || low.contains("list chats") || low.contains("show chats")
+                || low.contains("b chat") || low.contains("business whatsapp")) {
+            return false;
+        }
+        if (low.matches("(?s).*\\b(?:script|draft|write)\\b.*\\b(?:message|msg|text)\\b.*")) {
+            return false;
+        }
         if (low.contains("whatsapp") || low.contains("text ")) {
             List<Map<String, Object>> probe = splitUtterance(text);
             if (probe != null && !probe.isEmpty()) {
@@ -369,9 +380,12 @@ public final class BeeAsk {
                 || "yep".equals(stripped)
                 || "ok".equals(stripped)
                 || "okay".equals(stripped)
+                || "confirm".equals(stripped)
+                || "send".equals(stripped)
                 || "send it".equals(stripped)
                 || "do it".equals(stripped)
                 || "go ahead".equals(stripped)
+                || "please".equals(stripped)
                 || "that".equals(stripped)) {
             return "confirm";
         }
@@ -382,6 +396,89 @@ public final class BeeAsk {
             return "cancel";
         }
         return "ask";
+    }
+
+    /**
+     * Full TTS confirm line (includes WhatsApp message body). Island line
+     * stays short via {@link #thisOrThat} / {@link #clampLine}.
+     */
+    public static String confirmSpeak(List<?> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return "Say yes to confirm.";
+        }
+        try {
+            if (steps.size() > 1) {
+                return clampSpeak("Do these " + steps.size() + " actions? Say yes.");
+            }
+        } catch (Exception e) {
+            return "Say yes to confirm.";
+        }
+        Object first;
+        try {
+            first = steps.get(0);
+        } catch (Exception e) {
+            return "Say yes to confirm.";
+        }
+        if (!(first instanceof Map)) {
+            return "Say yes to confirm.";
+        }
+        Map<?, ?> row = (Map<?, ?>) first;
+        String t = row.get("tool") == null ? "" : String.valueOf(row.get("tool"));
+        Map<?, ?> args = null;
+        Object rawArgs = row.get("args");
+        if (rawArgs instanceof Map) {
+            args = (Map<?, ?>) rawArgs;
+        }
+        if ("whatsapp_send".equals(t) || "sms_send".equals(t)) {
+            String to = normSpace(argString(args, "to"));
+            String text = normSpace(argString(args, "text"));
+            if (text.isEmpty()) {
+                text = normSpace(argString(args, "body"));
+            }
+            String kind = "sms_send".equals(t) ? "SMS" : "WhatsApp";
+            if (to.isEmpty()) {
+                return clampSpeak(text.isEmpty()
+                        ? ("Send " + kind + "? Say yes.")
+                        : ("Send: " + text + ". Say yes."));
+            }
+            if (text.isEmpty()) {
+                return clampSpeak("Message " + to + "? Say yes.");
+            }
+            return clampSpeak(kind + " " + to + ": " + text + ". Say yes to send.");
+        }
+        if ("mail_compose".equals(t) || "mail_send".equals(t)) {
+            String to = normSpace(argString(args, "to"));
+            String subject = normSpace(argString(args, "subject"));
+            String body = normSpace(argString(args, "text"));
+            if (body.isEmpty()) {
+                body = normSpace(argString(args, "body"));
+            }
+            String bits = to.isEmpty() ? "email" : ("email " + to);
+            if (!subject.isEmpty()) {
+                bits = bits + ", " + subject;
+            }
+            if (!body.isEmpty()) {
+                bits = bits + ": " + body;
+            }
+            return clampSpeak(bits + ". Say yes to send.");
+        }
+        if ("dial".equals(t)) {
+            String to = normSpace(argString(args, "to"));
+            if (to.isEmpty()) {
+                to = normSpace(argString(args, "contact"));
+            }
+            return clampSpeak(to.isEmpty()
+                    ? "Place the call? Say yes."
+                    : ("Call " + to + "? Say yes."));
+        }
+        String shortPrompt = thisOrThat(steps);
+        if (shortPrompt == null || shortPrompt.isEmpty()) {
+            return "Say yes to confirm.";
+        }
+        if (shortPrompt.endsWith("?")) {
+            return clampSpeak(shortPrompt + " Say yes.");
+        }
+        return clampSpeak(shortPrompt + ". Say yes.");
     }
 
     public static String thisOrThat(List<?> steps) {
@@ -435,12 +532,25 @@ public final class BeeAsk {
                 label = q.isEmpty() ? "play music" : ("play " + q).trim();
             } else if ("whatsapp_send".equals(t)) {
                 String to = normSpace(argString(args, "to"));
-                label = to.isEmpty() ? "send text" : ("text " + to).trim();
+                String text = normSpace(argString(args, "text"));
+                if (text.isEmpty()) {
+                    text = normSpace(argString(args, "body"));
+                }
+                if (to.isEmpty()) {
+                    label = text.isEmpty() ? "send text" : ("send: " + text);
+                } else if (text.isEmpty()) {
+                    label = ("text " + to).trim();
+                } else {
+                    label = ("text " + to + ": " + text).trim();
+                }
             } else if ("mail_compose".equals(t)) {
                 String to = normSpace(argString(args, "to"));
                 label = to.isEmpty() ? "send email" : ("email " + to).trim();
             } else if ("dial".equals(t)) {
                 String to = normSpace(argString(args, "to"));
+                if (to.isEmpty()) {
+                    to = normSpace(argString(args, "contact"));
+                }
                 label = to.isEmpty() ? "call" : ("call " + to).trim();
             } else if ("open_app".equals(t)) {
                 String app = normSpace(argString(args, "app"));
@@ -771,6 +881,9 @@ public final class BeeAsk {
                     || "suggest_reply".equals(tool)
                     || "chat_touch".equals(tool)
                     || "phone_profile_snapshot".equals(tool)
+                    || "sms_send".equals(tool)
+                    || "mail_compose".equals(tool)
+                    || "mail_send".equals(tool)
                     || "dial".equals(tool)) {
                 return true;
             }
@@ -875,6 +988,95 @@ public final class BeeAsk {
             Map<String, String> args = new HashMap<String, String>();
             Matcher m2 = Pattern.compile("(?i)(?:reply\\s+to|to)\\s+(.+)$").matcher(cleaned);
             args.put("to", m2.find() ? nz(m2.group(1)) : "");
+            row.put("args", args);
+            return row;
+        }
+        m = Pattern.compile(
+                "(?i)^\\s*(?:show|list|open)?\\s*(?:my\\s+)?(?:last\\s+)?(\\d{1,2})?\\s*"
+                        + "(?:whatsapp\\s+)?(?:business\\s+)?(?:b\\s+)?chats?\\s*$").matcher(cleaned);
+        if (m.find()) {
+            row.put("tool", "wa_list_chats");
+            Map<String, String> args = new HashMap<String, String>();
+            String lim = m.group(1);
+            args.put("limit", lim == null || lim.isEmpty() ? "30" : lim);
+            args.put("package", "com.whatsapp.w4b");
+            row.put("args", args);
+            return row;
+        }
+        if (low.contains("last") && (low.contains("chat") || low.contains("chats"))
+                || low.contains("b chat") || low.contains("business whatsapp")
+                || low.contains("list chats") || low.contains("show chats")) {
+            row.put("tool", "wa_list_chats");
+            Map<String, String> args = new HashMap<String, String>();
+            args.put("limit", "30");
+            args.put("package", "com.whatsapp.w4b");
+            row.put("args", args);
+            return row;
+        }
+        m = Pattern.compile(
+                "(?i)^\\s*(?:script|draft|write)\\s+(?:an?\\s+)?(?:sms|text\\s+message)\\s+"
+                        + "(?:to\\s+)?(.+?)\\s+(?:saying|that|about|regarding|re|:|—|-)\\s*(.+)$")
+                .matcher(cleaned);
+        if (m.find()) {
+            row.put("tool", "chat_touch");
+            Map<String, String> args = new HashMap<String, String>();
+            args.put("to", nz(m.group(1)));
+            args.put("topic", nz(m.group(2)));
+            args.put("channel", "sms");
+            row.put("args", args);
+            return row;
+        }
+        m = Pattern.compile(
+                "(?i)^\\s*(?:script|draft|write)\\s+(?:an?\\s+)?(?:email|mail)\\s+"
+                        + "(?:to\\s+)?(.+?)\\s+(?:saying|that|about|regarding|re|:|—|-)\\s*(.+)$")
+                .matcher(cleaned);
+        if (m.find()) {
+            row.put("tool", "chat_touch");
+            Map<String, String> args = new HashMap<String, String>();
+            args.put("to", nz(m.group(1)));
+            args.put("topic", nz(m.group(2)));
+            args.put("channel", "mail");
+            row.put("args", args);
+            return row;
+        }
+        m = Pattern.compile(
+                "(?i)^\\s*(?:script|draft|write)\\s+(?:a\\s+)?(?:whatsapp\\s+|wa\\s+)?"
+                        + "(?:message|msg|text)\\s+(?:to\\s+)?(.+?)\\s+"
+                        + "(?:saying|that|about|regarding|re|:|—|-)\\s*(.+)$").matcher(cleaned);
+        if (m.find()) {
+            // Compose in user's tone — not send topic as literal text.
+            row.put("tool", "chat_touch");
+            Map<String, String> args = new HashMap<String, String>();
+            args.put("to", nz(m.group(1)));
+            args.put("topic", nz(m.group(2)));
+            args.put("channel", channelForScript(low));
+            if ("whatsapp".equals(args.get("channel"))) {
+                args.put("package", waPackageFor(low));
+            }
+            row.put("args", args);
+            return row;
+        }
+        m = Pattern.compile(
+                "(?i)^\\s*(?:script|draft|write)\\s+(?:a\\s+)?(?:message|msg|text)\\s+"
+                        + "(?:to\\s+)?(\\S+)(?:\\s+(.*))?$").matcher(cleaned);
+        if (m.find()) {
+            row.put("tool", "chat_touch");
+            Map<String, String> args = new HashMap<String, String>();
+            args.put("to", nz(m.group(1)));
+            args.put("topic", m.group(2) == null ? "" : m.group(2).trim());
+            args.put("channel", channelForScript(low));
+            if ("whatsapp".equals(args.get("channel"))) {
+                args.put("package", waPackageFor(low));
+            }
+            row.put("args", args);
+            return row;
+        }
+        m = Pattern.compile("(?i)^\\s*(?:sms|text\\s+message)\\s+(\\S+)(?:\\s+(.*))?$").matcher(cleaned);
+        if (m.find()) {
+            row.put("tool", "sms_send");
+            Map<String, String> args = new HashMap<String, String>();
+            args.put("to", nz(m.group(1)));
+            args.put("text", m.group(2) == null ? "" : m.group(2).trim());
             row.put("args", args);
             return row;
         }
@@ -1001,6 +1203,21 @@ public final class BeeAsk {
             return "com.whatsapp";
         }
         return "com.whatsapp.w4b";
+    }
+
+    /** Channel for script/draft when not explicitly sms/mail/whatsapp. */
+    static String channelForScript(String low) {
+        if (low == null) {
+            return "whatsapp";
+        }
+        if (low.contains("sms") || low.contains("text message")) {
+            return "sms";
+        }
+        if (low.contains("email") || low.contains("mail ") || low.startsWith("mail")
+                || low.contains("gmail")) {
+            return "mail";
+        }
+        return "whatsapp";
     }
 
     private static String nz(String s) {

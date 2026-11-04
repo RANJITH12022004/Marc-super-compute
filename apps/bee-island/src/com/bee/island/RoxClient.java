@@ -80,7 +80,8 @@ final class RoxClient {
             conn.setRequestMethod("GET");
             applyAuth(conn, context);
             int code = conn.getResponseCode();
-            return code >= 200 && code < 500;
+            // 5xx (e.g. door 502) must not look reachable — leftover needs on-device Muse.
+            return code >= 200 && code < 400;
         } catch (Exception e) {
             return false;
         } finally {

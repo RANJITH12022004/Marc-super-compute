@@ -41,8 +41,23 @@ def mind_dir() -> Path:
     return Path(raw)
 
 
+# Nickname / spoken aliases → canonical style slug.
+_SLUG_ALIASES = {
+    "mom": "amma",
+    "mother": "amma",
+    "mummy": "amma",
+    "ammaa": "amma",
+    "dad": "appa",
+    "father": "appa",
+    "appa": "appa",
+    "nan": "amma",
+}
+
+
 def _safe_slug(value: str, default: str = "untitled") -> str:
-    cleaned = _SAFE_RE.sub("_", str(value or "").strip()).strip("_")
+    cleaned = _SAFE_RE.sub("_", str(value or "").strip().lower()).strip("_")
+    if cleaned in _SLUG_ALIASES:
+        cleaned = _SLUG_ALIASES[cleaned]
     if not cleaned:
         cleaned = default
     return cleaned[:120]
@@ -723,6 +738,68 @@ def _canon_channel(channel) -> str:
     return c or "general"
 
 
+def _people_relation(slug: str) -> str:
+    """Return relation hint from people/{slug}.md (friend/family/work)."""
+    try:
+        from brain import vault as _vault  # type: ignore
+        text = _vault.read_md("people/%s.md" % slug) or ""
+    except Exception:
+        text = ""
+    low = str(text).lower()
+    if any(k in low for k in ("mother", "amma", "family", "app", "dad", "wife", "husband")):
+        return "family"
+    if any(k in low for k in ("work", "colleague", "manager", "client", "boss")):
+        return "work"
+    if "friend" in low:
+        return "friend"
+    return ""
+
+
+def _your_examples(card: str) -> list:
+    """Pull YOUR example lines from a style card."""
+    out = []
+    if not card:
+        return out
+    try:
+        for line in card.splitlines():
+            s = line.strip()
+            if s.upper().startswith("- YOUR:"):
+                val = s.split(":", 1)[-1].strip()
+                if val and "no YOUR" not in val:
+                    out.append(val)
+    except Exception:
+        pass
+    return out
+
+
+def _rewrite_wa_core(intent: str, card: str, relation: str) -> str:
+    """Turn planner topic into a short WA body in card voice (no 'regarding')."""
+    raw = re.sub(r"\s+", " ", str(intent or "")).strip()
+    raw = re.sub(r"^(regarding|about|re|saying|that)\s+", "", raw, flags=re.I).strip()
+    low = raw.lower()
+    formality = (_card_hint(card, "Formality") or "").lower()
+    lang = (_card_hint(card, "Tamil") or _card_hint(card, "Tamil/English mix") or "").lower()
+    casual = (
+        "casual" in formality or "informal" in formality
+        or relation in ("family", "friend")
+        or "tamil" in lang or "telugu" in lang or "mixed" in lang
+    )
+    if casual:
+        if any(k in low for k in ("late", "running late", "be late")):
+            return "I'll be late, on the way."
+        if "on the way" in low or low in ("coming", "coming now"):
+            return "On the way!"
+        if "call" in low and "later" in low:
+            return "Can I call you later?"
+        if "reached" in low or "home" in low and "safe" in low:
+            return "Reached home."
+    if not raw:
+        return "Just checking in."
+    if raw[0].islower():
+        raw = raw[0].upper() + raw[1:]
+    return raw
+
+
 def draft_like_me(person_slug, channel, intent="") -> str:
     """Return a draft body string in the card's voice for *channel*.
 
@@ -730,6 +807,7 @@ def draft_like_me(person_slug, channel, intent="") -> str:
     - Instagram: warmer, friendly.
     - Mail: formal with greeting + signoff.
     Professional mail facts in *intent* are redacted for IG/WA.
+    Prefer YOUR example cadence; relation from people/{slug} when present.
     """
     slug = _safe_slug(person_slug, "untitled")
     canon = _canon_channel(channel)
@@ -753,6 +831,9 @@ def draft_like_me(person_slug, channel, intent="") -> str:
     except Exception:
         card = ""
 
+    relation = _people_relation(slug)
+    examples = _your_examples(card)
+
     greet = _card_hint(card, "Greetings").strip()
     sign = _card_hint(card, "Signoff").strip()
     if greet.lower() in ("none observed", "none", ""):
@@ -766,9 +847,13 @@ def draft_like_me(person_slug, channel, intent="") -> str:
     name = slug.replace("_", " ").strip().title() if slug else "there"
 
     if canon == "whatsapp":
-        g = greet.capitalize() if greet else "Hi"
-        # Short WA: greeting + intent, hard cap.
-        body = "%s! %s" % (g, clean_one)
+        g = greet.capitalize() if greet else ("Hi" if relation != "work" else "Hello")
+        core = _rewrite_wa_core(clean_one, card, relation)
+        # Prefer spark rewrite when API key present.
+        sparked = _spark_rewrite(slug, canon, clean_one, card, examples, core)
+        if sparked:
+            core = sparked
+        body = "%s! %s" % (g, core)
         if len(body) > 220:
             body = body[:219].rstrip() + "…"
         return body
@@ -796,6 +881,48 @@ def draft_like_me(person_slug, channel, intent="") -> str:
     else:
         close = "Best regards"
     return "%s\n\n%s\n\n%s,\nRanjith" % (open_line, clean_one, close)
+
+
+def _spark_rewrite(slug, channel, intent, card, examples, fallback) -> str:
+    """Best-effort Muse/OpenAI rewrite; returns "" when unavailable."""
+    key = (os.environ.get("MUSE_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not key or not card:
+        return ""
+    try:
+        import urllib.request
+        import json as _json
+        ex = "; ".join(examples[:3]) if examples else ""
+        prompt = (
+            "Rewrite as a short WhatsApp from me to %s about: %s\n"
+            "Match this style. Examples: %s\nCard excerpt:\n%s\n"
+            "Reply with ONLY the message body (no greeting if already in draft)."
+            % (slug, intent, ex, (card or "")[:1200])
+        )
+        # Prefer local fallback shape — keep network optional/short.
+        body = {
+            "model": os.environ.get("MUSE_SPARK_MODEL") or "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 80,
+            "temperature": 0.4,
+        }
+        base = (os.environ.get("MUSE_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        req = urllib.request.Request(
+            base + "/chat/completions",
+            data=_json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer " + key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        text = data["choices"][0]["message"]["content"].strip()
+        if text and len(text) < 280 and "style" not in text.lower()[:20]:
+            return text
+    except Exception:
+        return ""
+    return ""
 
 
 if __name__ == "__main__":

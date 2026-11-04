@@ -10,6 +10,7 @@ import android.view.KeyEvent;
 import android.view.inputmethod.InputConnection;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -138,8 +139,16 @@ final class PhoneActions {
         }
 
         if ("whatsapp_send".equals(tool)) {
-            return driveWhatsApp(context, str(args, "to"), str(args, "text"),
+            Map<String, Object> wa = driveWhatsApp(context, str(args, "to"), str(args, "text"),
                     str(args, "package"), result);
+            attachObserve(wa);
+            return wa;
+        }
+
+        if ("wa_list_chats".equals(tool)) {
+            Map<String, Object> listed = driveWaListChats(context, args, result);
+            attachObserve(listed);
+            return listed;
         }
 
         if ("notifications_list".equals(tool)) {
@@ -172,24 +181,94 @@ final class PhoneActions {
             if (topic.isEmpty()) {
                 topic = str(args, "text");
             }
-            String spoken = BeeNotify.suggestFor(who);
-            if (spoken == null || spoken.isEmpty()
-                    || spoken.startsWith("No matching")) {
-                spoken = "Need a WhatsApp export for " + who + " first.";
+            String channel = str(args, "channel");
+            if (channel.isEmpty()) {
+                channel = "whatsapp";
+            }
+            channel = channel.toLowerCase(Locale.US);
+            if ("email".equals(channel) || "gmail".equals(channel)) {
+                channel = "mail";
+            }
+            String draft = "";
+            // Prefer Rox draft_like_me when door is up (not notif heuristics).
+            try {
+                if (RoxClient.reachable(context)) {
+                    String ask = "script a " + channel + " message to " + who
+                            + " regarding " + topic;
+                    Map<String, Object> reply = RoxClient.postUtterance(context, ask);
+                    if (reply != null) {
+                        if (reply.get("draft") != null) {
+                            draft = String.valueOf(reply.get("draft")).trim();
+                        }
+                        if (draft.isEmpty() && reply.get("spoken") != null) {
+                            String spokenR = String.valueOf(reply.get("spoken")).trim();
+                            String low = spokenR.toLowerCase(Locale.US);
+                            int idx = low.indexOf("suggested reply:");
+                            if (idx >= 0) {
+                                draft = spokenR.substring(
+                                        idx + "suggested reply:".length()).trim();
+                            } else if (!spokenR.isEmpty()
+                                    && !BeeMind.isEmptyBrainText(spokenR)
+                                    && !spokenR.toLowerCase(Locale.US).contains("need a")) {
+                                draft = spokenR;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            if (draft == null || draft.isEmpty()) {
+                draft = BeeStyle.draftLikeMe(context, who, topic, channel);
+            }
+            // Optional Muse spark rewrite with style card when key present.
+            if (draft != null && !draft.isEmpty()) {
+                try {
+                    String key = KeyVault.loadKey(context);
+                    String card = BeeStyle.loadCard(context, who, channel);
+                    if (card == null || card.isEmpty()) {
+                        card = BeeStyle.loadCard(context, who, "whatsapp");
+                    }
+                    if (key != null && !key.isEmpty() && card != null
+                            && !card.isEmpty() && card.length() < 2500) {
+                        String prompt = "Rewrite as a short " + channel + " from me to "
+                                + who + " about: " + topic
+                                + "\nMatch this style card:\n" + card
+                                + "\nDraft so far: " + draft
+                                + "\nReply with ONLY the message body.";
+                        String sparked = MuseClient.complete(key, MuseClient.SPARK, prompt);
+                        if (sparked != null) {
+                            String clean = sparked.trim();
+                            if (!clean.isEmpty() && clean.length() < 400
+                                    && !clean.toLowerCase(Locale.US).contains("style card")) {
+                                draft = clean;
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            if (draft == null || draft.isEmpty()) {
+                String spoken = "Need a style card for " + who + " — run ingest";
                 result.put("ok", Boolean.FALSE);
                 result.put("spoken", spoken);
                 return result;
             }
-            if (topic != null && !topic.isEmpty()
-                    && !spoken.toLowerCase(Locale.US).contains("suggested")) {
-                spoken = "About " + topic + ". " + spoken;
-            }
+            String spoken = "Suggested: " + draft;
             result.put("ok", Boolean.TRUE);
             result.put("spoken", spoken);
-            result.put("draft", spoken);
+            result.put("draft", draft);
             result.put("to", who);
-            result.put("package", resolveWaPackage(str(args, "package"), who));
+            result.put("channel", channel);
+            if ("whatsapp".equals(channel)) {
+                result.put("package", resolveWaPackage(str(args, "package"), who));
+            }
             return result;
+        }
+
+        if ("sms_send".equals(tool)) {
+            return driveSms(context, str(args, "to"),
+                    str(args, "text").isEmpty() ? str(args, "body") : str(args, "text"),
+                    result);
         }
 
         if ("phone_profile_snapshot".equals(tool)) {
@@ -209,7 +288,9 @@ final class PhoneActions {
             if (who == null || who.trim().isEmpty()) {
                 who = str(args, "contact");
             }
-            return driveCall(context, who, result);
+            Map<String, Object> call = driveCall(context, who, result);
+            attachObserve(call);
+            return call;
         }
 
         if ("mail_send".equals(tool) || "mail_compose".equals(tool)) {
@@ -319,18 +400,32 @@ final class PhoneActions {
             }
             goWaChatList(pkg);
             leaveWaMessageSearch(pkg);
-            boolean opened = IslandAccess.clickLabel("Message yourself")
+            String matched = IslandAccess.clickChatRowFuzzy(name);
+            boolean opened = matched != null
+                    || IslandAccess.clickLabel("Message yourself")
                     || IslandAccess.clickChatRow(name);
+            if (matched != null && !matched.isEmpty()) {
+                result.put("matched", matched);
+                String first = matched.split("\n")[0].trim();
+                if (!first.equalsIgnoreCase(name)) {
+                    result.put("spoken", "Opening " + first);
+                }
+            }
             if (!opened) {
                 openWaChatSearch(pkg);
                 pause(400);
                 IslandAccess.typeFocused(name);
                 pause(700);
+                matched = IslandAccess.clickChatRowFuzzy(name);
                 if (IslandAccess.clickLabel("Message yourself")) {
                     pause(500);
                     opened = true;
+                } else if (matched != null) {
+                    opened = true;
+                    result.put("matched", matched);
                 } else if (!IslandAccess.clickChatRow(name)) {
                     String digits = name.replaceAll("[^0-9+]", "");
+                    // Hardcoded seeds only as last resort.
                     if (digits.length() < 4) {
                         if (lowName.contains("rahull")) {
                             digits = "9900388573";
@@ -345,7 +440,8 @@ final class PhoneActions {
                         pause(300);
                         IslandAccess.typeFocused(digits);
                         pause(700);
-                        row = IslandAccess.clickChatRow(digits)
+                        row = IslandAccess.clickChatRowFuzzy(digits) != null
+                                || IslandAccess.clickChatRow(digits)
                                 || IslandAccess.clickChatRow(digits.substring(digits.length() - 4));
                     }
                     if (!row) {
@@ -354,6 +450,7 @@ final class PhoneActions {
                         IslandAccess.nodeDump();
                         return result;
                     }
+                    opened = true;
                 }
             }
             if (IslandAccess.hasText("Chat lock") || IslandAccess.hasText("Manage storage")) {
@@ -668,14 +765,39 @@ final class PhoneActions {
         try {
             if (looksLikeNumber(name)) {
                 String digits = name.replaceAll("[^0-9+]", "");
-                Intent call = new Intent(Intent.ACTION_CALL);
-                call.setData(Uri.parse("tel:" + digits));
-                call.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(call);
-                pause(600);
-                IslandAccess.clickText("Call");
-                result.put("ok", Boolean.TRUE);
-                return result;
+                boolean canCall = false;
+                try {
+                    canCall = context != null
+                            && context.checkSelfPermission(
+                                    android.Manifest.permission.CALL_PHONE)
+                            == PackageManager.PERMISSION_GRANTED;
+                } catch (Exception ignored) {
+                    canCall = false;
+                }
+                try {
+                    Intent call = new Intent(
+                            canCall ? Intent.ACTION_CALL : Intent.ACTION_DIAL);
+                    call.setData(Uri.parse("tel:" + digits));
+                    call.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(call);
+                    pause(600);
+                    if (canCall) {
+                        IslandAccess.clickText("Call");
+                    }
+                    result.put("ok", Boolean.TRUE);
+                    if (!canCall) {
+                        result.put("spoken", "Dialer open — tap Call.");
+                    }
+                    return result;
+                } catch (SecurityException se) {
+                    Intent dial = new Intent(Intent.ACTION_DIAL);
+                    dial.setData(Uri.parse("tel:" + digits));
+                    dial.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(dial);
+                    result.put("ok", Boolean.TRUE);
+                    result.put("spoken", "Dialer open — tap Call.");
+                    return result;
+                }
             }
             Intent launch = openAppIntent(context, "phone");
             if (launch == null) {
@@ -693,10 +815,18 @@ final class PhoneActions {
             pause(400);
             IslandAccess.typeFocused(name);
             pause(600);
-            if (!IslandAccess.clickChatRow(name)) {
+            String matched = IslandAccess.clickChatRowFuzzy(name);
+            if (matched == null && !IslandAccess.clickChatRow(name)) {
                 result.put("ok", Boolean.FALSE);
                 result.put("error", "call not placed");
                 return result;
+            }
+            if (matched != null && !matched.isEmpty()) {
+                result.put("matched", matched);
+                String first = matched.split("\n")[0].trim();
+                if (!first.equalsIgnoreCase(name)) {
+                    result.put("spoken", "Calling " + first);
+                }
             }
             pause(400);
             if (!IslandAccess.clickText("Call") && !IslandAccess.clickText("Phone")) {
@@ -739,12 +869,43 @@ final class PhoneActions {
             if (body != null && !body.trim().isEmpty()) {
                 IslandAccess.typeFocused(body.trim());
             }
+            // mail_compose / mail_send are confirm-gated; Send only after yes.
             pause(300);
             IslandAccess.clickText("Send");
             result.put("ok", Boolean.TRUE);
         } catch (Exception e) {
             result.put("ok", Boolean.FALSE);
             result.put("error", "mail failed");
+        }
+        return result;
+    }
+
+    static Map<String, Object> driveSms(Context context, String to, String text,
+                                        Map<String, Object> result) {
+        try {
+            String who = to == null ? "" : to.trim();
+            String body = text == null ? "" : text.trim();
+            Intent i = new Intent(Intent.ACTION_SENDTO);
+            i.setData(Uri.parse("smsto:" + Uri.encode(who)));
+            if (!body.isEmpty()) {
+                i.putExtra("sms_body", body);
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(i);
+            pause(900);
+            if (!body.isEmpty()) {
+                IslandAccess.typeFocused(body);
+            }
+            // sms_send is confirm-gated; tap Send after yes.
+            pause(400);
+            if (!IslandAccess.clickText("Send")) {
+                IslandAccess.clickLabel("Send");
+            }
+            result.put("ok", Boolean.TRUE);
+            result.put("spoken", who.isEmpty() ? "SMS sent." : ("SMS to " + who + "."));
+        } catch (Exception e) {
+            result.put("ok", Boolean.FALSE);
+            result.put("error", "sms failed");
         }
         return result;
     }
@@ -1292,6 +1453,98 @@ final class PhoneActions {
         }
         ic.commitText(text, 1);
         ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+    }
+
+    static Map<String, Object> driveWaListChats(Context context, Map<?, ?> args,
+                                                Map<String, Object> result) {
+        int limit = 30;
+        try {
+            String raw = str(args, "limit");
+            if (!raw.isEmpty()) {
+                limit = Integer.parseInt(raw.trim());
+            }
+        } catch (Exception ignored) {
+            limit = 30;
+        }
+        if (limit < 1) {
+            limit = 1;
+        }
+        if (limit > 40) {
+            limit = 40;
+        }
+        String pkg = resolveWaPackage(str(args, "package"), "business");
+        try {
+            Intent launch = openAppIntent(context, pkg);
+            if (launch == null) {
+                launch = openAppIntent(context, "whatsapp business");
+            }
+            if (launch == null) {
+                result.put("ok", Boolean.FALSE);
+                result.put("error", "whatsapp missing");
+                return result;
+            }
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(launch);
+            String waitNeedle = pkg.contains("w4b") ? "w4b" : "whatsapp";
+            IslandAccess.waitFor(waitNeedle, null, 8000);
+            goWaChatList(pkg);
+            pause(600);
+            List<String> titles = IslandAccess.listChatTitles(limit);
+            if (titles == null) {
+                titles = new ArrayList<String>();
+            }
+            result.put("ok", Boolean.TRUE);
+            result.put("chats", titles);
+            result.put("count", Integer.valueOf(titles.size()));
+            StringBuilder spoken = new StringBuilder();
+            spoken.append("Last ").append(titles.size()).append(" chats. ");
+            int n = Math.min(titles.size(), 8);
+            for (int i = 0; i < n; i++) {
+                String t = titles.get(i);
+                if (t == null) {
+                    continue;
+                }
+                String shortName = t.split("\n")[0].trim();
+                if (shortName.length() > 28) {
+                    shortName = shortName.substring(0, 28);
+                }
+                if (i > 0) {
+                    spoken.append(", ");
+                }
+                spoken.append(shortName);
+            }
+            if (titles.size() > n) {
+                spoken.append(", and ").append(titles.size() - n).append(" more");
+            }
+            result.put("spoken", spoken.toString());
+            try {
+                for (int i = 0; i < titles.size(); i++) {
+                    ChatStore.add(context, false, "chat: " + titles.get(i).split("\n")[0].trim());
+                }
+            } catch (Exception ignored) {
+            }
+        } catch (Exception e) {
+            result.put("ok", Boolean.FALSE);
+            result.put("error", "list chats failed");
+        }
+        return result;
+    }
+
+    private static void attachObserve(Map<String, Object> result) {
+        if (result == null) {
+            return;
+        }
+        try {
+            Map<String, Object> obs = IslandAccess.observe();
+            if (obs != null) {
+                result.put("observe", obs);
+                Object pkg = obs.get("foregroundPkg");
+                if (pkg != null) {
+                    result.put("foregroundPkg", pkg);
+                }
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private static String str(Map<?, ?> args, String key) {

@@ -1007,7 +1007,27 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
         return {"reply": "I can't do that.", "session_id": sid, "plan": []}
 
     local = _local_plan(raw, sid, target)
-    if local.get("plan"):
+    # Multi-step / empty-body WA: still ask spark once to normalize args, then merge.
+    need_normalize = False
+    try:
+        pl0 = local.get("plan") if isinstance(local, dict) else None
+        if isinstance(pl0, list) and len(pl0) >= 2:
+            need_normalize = True
+        elif isinstance(pl0, list) and len(pl0) == 1:
+            step0 = pl0[0] if isinstance(pl0[0], dict) else {}
+            tool0 = str(step0.get("tool") or "")
+            args0 = step0.get("args") if isinstance(step0.get("args"), dict) else {}
+            if tool0 in ("whatsapp_send", "wa_list_chats") and not str(
+                args0.get("text") or args0.get("body") or ""
+            ).strip():
+                if tool0 == "whatsapp_send":
+                    need_normalize = True
+            if "script" in (raw or "").lower() or "draft" in (raw or "").lower():
+                need_normalize = True
+    except Exception:
+        need_normalize = False
+
+    if local.get("plan") and not need_normalize:
         if is_drive:
             try:
                 cap = _driving_cap(raw_context)
@@ -1075,6 +1095,27 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
             spark_ctx = None
     spark = _call_spark(raw, sid, target, note, spark_ctx)
     if spark is not None:
+        # Prefer spark plan when normalizing; fall back to local DAG.
+        try:
+            sp = spark.get("plan") if isinstance(spark, dict) else None
+            lp = local.get("plan") if isinstance(local, dict) else None
+            if need_normalize and (not isinstance(sp, list) or not sp) and isinstance(lp, list) and lp:
+                spark["plan"] = lp
+            elif need_normalize and isinstance(sp, list) and sp and isinstance(lp, list) and lp:
+                # Merge missing text/to from local into spark steps by index.
+                for i, sstep in enumerate(sp):
+                    if not isinstance(sstep, dict) or i >= len(lp):
+                        continue
+                    lstep = lp[i] if isinstance(lp[i], dict) else {}
+                    sa = sstep.get("args") if isinstance(sstep.get("args"), dict) else {}
+                    la = lstep.get("args") if isinstance(lstep.get("args"), dict) else {}
+                    if not str(sa.get("text") or "").strip() and str(la.get("text") or "").strip():
+                        sa["text"] = la.get("text")
+                    if not str(sa.get("to") or "").strip() and str(la.get("to") or "").strip():
+                        sa["to"] = la.get("to")
+                    sstep["args"] = sa
+        except Exception:
+            pass
         if is_drive:
             try:
                 cap = _driving_cap(raw_context)
@@ -1093,5 +1134,9 @@ def plan(text="", session_id="phone", target="auto", note="", context=None, pend
         spark.setdefault("reply", "On it.")
         spark.setdefault("session_id", sid)
         return spark
+    if need_normalize and isinstance(local, dict) and local.get("plan"):
+        local.setdefault("session_id", sid)
+        local.setdefault("reply", "On it.")
+        return local
     # Sandbox boot without a key: valid contract, no crash.
     return {"reply": _maybe_shorten("Got it — nothing to do yet."), "session_id": sid, "plan": []}

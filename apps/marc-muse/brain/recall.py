@@ -537,9 +537,27 @@ def mind_recall(query=""):
         else:
             text, hits = rag_text, rag_hits
 
-        # Merge RAG hits ahead of planner/spoken output.
+        # Merge RAG with identity answers. For "who am i", ME.md stays first —
+        # never bury soul under _template / laptop code FTS noise.
         if rag_text and rag_text.strip():
-            if text and text.strip() and rag_text.strip() not in text:
+            if wants_who:
+                clean_hits = []
+                for h in (rag_hits or []):
+                    if not isinstance(h, dict):
+                        continue
+                    p = str(h.get("path") or "").replace("\\", "/").lower()
+                    if p.endswith("_template.md") or "/_template" in p:
+                        continue
+                    if "notes/laptop/" in p and (
+                        "venv" in p or "site-packages" in p or "downloads__" in p
+                    ):
+                        continue
+                    clean_hits.append(h)
+                if text and text.strip():
+                    hits = list(hits or []) + clean_hits
+                elif clean_hits:
+                    text, hits = rag_text, clean_hits
+            elif text and text.strip() and rag_text.strip() not in text:
                 text = rag_text.rstrip() + "\n\n---\n\n" + text
                 hits = list(rag_hits or []) + list(hits or [])
             elif not (text or "").strip():

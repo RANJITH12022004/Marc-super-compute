@@ -149,7 +149,8 @@ public class IslandPillView extends FrameLayout {
             targetH = listenHeightPx;
             rimPaint.setColor(RIM_LISTEN);
             statusPaint.setColor(TEXT);
-            if (statusText == null || statusText.isEmpty()) {
+            // When drawCapsule is false, IslandService lineView owns the mission text.
+            if (drawCapsule && (statusText == null || statusText.isEmpty())) {
                 statusText = "Listening…";
             }
         } else if (STATE_THINKING.equals(state)) {
@@ -157,7 +158,7 @@ public class IslandPillView extends FrameLayout {
             targetH = listenHeightPx;
             rimPaint.setColor(RIM_THINK);
             statusPaint.setColor(TEXT);
-            if (statusText == null || statusText.isEmpty()) {
+            if (drawCapsule && (statusText == null || statusText.isEmpty())) {
                 statusText = "Thinking…";
             }
         } else if (STATE_SUCCESS.equals(state)) {

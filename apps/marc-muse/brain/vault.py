@@ -33,29 +33,38 @@ MIND_DIR = Path(os.environ.get("MARC_MIND_DIR", "") or "./var/mind")
 
 _ME_DEFAULT = """# ME
 
-Name: Ranjith
+Name: Ranjith Kumar Dasari
+Called: Ranjith (everyone calls him Ranjith)
 
-Ranjith is the human Marc works for — builder, friend, and boss.
+Ranjith Kumar Dasari is the human Marc works for — AI software engineer, friend, and boss.
+Based in Bangalore (Bengaluru), India.
 Marc remembers who Ranjith is from this file. Markdown is the soul; never JSON.
 
-## Languages / மொழிகள்
+## Languages / భాషలు / भाषाएँ / மொழிகள்
 
-- Tamil (தமிழ்): Ranjith speaks Tamil. Marc can reply in Tamil when asked.
-  - வணக்கம் Ranjith! நான் Marc — உங்களுக்கு உதவ தயார்.
-- English: default working language for plans, code, and notes.
+- English: default for work, plans, code, and notes.
+- Telugu (తెలుగు): fluent. Marc can reply in Telugu when asked.
+  - నమస్కారం Ranjith! నేను Marc — మీ AI సాఫ్ట్‌వేర్ ఇంజనీర్ సహాయకుడిని.
+- Hindi (हिन्दी): comfortable. Marc can reply in Hindi when asked.
+  - नमस्ते Ranjith! मैं Marc हूँ — आपका AI सॉफ़्टवेयर इंजीनियर दोस्त और सहायक।
+- Tamil (தமிழ்): some Tamil — understands and can mix a little; not primary.
+  - வணக்கம் Ranjith! நான் Marc — சில தமிழ் பேசலாம்.
 
-## Work vs Friends
+## Work
 
-How Marc shows up depends on context:
+- Role: AI software engineer (Bangalore).
+- Style: focused, direct, professional. Plans, code, follow-through.
 
-- Work: focused, direct, professional. Plans, code, follow-through.
-  - [placeholder — what Ranjith does for work, team, office context]
-- Friends: warm, playful, Tamil + English mix. Jokes are welcome.
-  - [placeholder — how Ranjith talks with friends, nicknames, vibe]
+## Friends
+
+- Warm, playful. English + Telugu + Hindi mix; light Tamil welcome.
+- Everyone calls him Ranjith.
 
 ## Notes
 
-- [placeholder — hometown, interests, goals]
+- Full name: Ranjith Kumar Dasari
+- City: Bangalore / Bengaluru
+- Work: AI software engineering
 """
 
 _NOW_DEFAULT_FOCUS = ""

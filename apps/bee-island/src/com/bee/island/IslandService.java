@@ -5,8 +5,12 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.content.pm.ServiceInfo;
+import android.util.Log;
 import android.graphics.PixelFormat;
 import android.media.MediaRecorder;
 import android.os.Build;
@@ -18,6 +22,9 @@ import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -25,6 +32,8 @@ import android.view.WindowManager;
 import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -44,7 +53,7 @@ public class IslandService extends Service {
 
     private static final String CHANNEL_ID = "island";
     private static final int NOTIF_ID = 41;
-    private static final long LISTEN_TIMEOUT_MS = 8000;
+    private static final long LISTEN_TIMEOUT_MS = 20000;
 
     private static final int PILL_W_DP = 126;
     private static final int PILL_H_DP = 34;
@@ -122,6 +131,8 @@ public class IslandService extends Service {
     private IslandPillView pillView;
     private IslandBackdropView backdropView;
     private IslandWaveView waveView;
+    private TextView lineView;
+    private FrameLayout capsule;
     private HydrationHeroView hero;
     private View heroHit;
     private SpeechRecognizer recognizer;
@@ -129,7 +140,14 @@ public class IslandService extends Service {
     private File recordFile;
     private boolean listening;
     private boolean confirming;
-    private boolean fallbackUsed;
+    private boolean museAttempted;
+    private boolean srRetryUsed;
+    private boolean listenStarting;
+    private boolean readyForSpeech;
+    private boolean confirmListenArmed;
+    private int listenGen;
+    private int failSpokenGen = -1;
+    private static final String TAG = "BeeIsland";
     private long listenStartedAt;
     private final Handler main = new Handler(Looper.getMainLooper());
     private boolean autoScrolling;
@@ -219,20 +237,36 @@ public class IslandService extends Service {
     private final Runnable listenWatch = new Runnable() {
         @Override
         public void run() {
+            final int gen = listenGen;
             if (recorder != null) {
                 finishRecordAndTranscribe();
                 return;
             }
-            if (!listening) {
+            if (!listening || gen != listenGen) {
                 return;
             }
             try {
                 if (recognizer != null) {
-                    recognizer.cancel();
+                    recognizer.stopListening();
                 }
             } catch (Exception ignored) {
+                try {
+                    if (recognizer != null) {
+                        recognizer.cancel();
+                    }
+                } catch (Exception ignored2) {
+                }
             }
-            speakListenFail();
+            // Results may still arrive; only fail if this session is still live.
+            main.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (listening && gen == listenGen) {
+                        listening = false;
+                        speakListenFail(gen);
+                    }
+                }
+            }, 400);
         }
     };
 
@@ -321,8 +355,25 @@ public class IslandService extends Service {
                     .setContentTitle("Bee island")
                     .setContentText("Listening for tap")
                     .setOngoing(true);
-            startForeground(NOTIF_ID, b.build());
-        } catch (Exception ignored) {
+            Notification notif = b.build();
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            } else {
+                startForeground(NOTIF_ID, notif);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "ensureForeground", e);
+            try {
+                Notification.Builder b2 = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                        ? new Notification.Builder(this, CHANNEL_ID)
+                        : new Notification.Builder(this);
+                b2.setSmallIcon(android.R.drawable.presence_audio_online)
+                        .setContentTitle("Bee island")
+                        .setContentText("Listening for tap")
+                        .setOngoing(true);
+                startForeground(NOTIF_ID, b2.build());
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -351,6 +402,8 @@ public class IslandService extends Service {
             pillView = null;
             backdropView = null;
             waveView = null;
+            lineView = null;
+            capsule = null;
 
             // Size window for listen morph so growth stays camera-centered
             // and never clips under the battery / network icons.
@@ -376,49 +429,74 @@ public class IslandService extends Service {
             outer.setClipToPadding(false);
             outer.setLayoutParams(new FrameLayout.LayoutParams(hitW, hitH));
 
+            // Capsule host = visual band only (not the tall hit/slop box).
+            // Mission/speech/wave MUST live here or they render below the island.
+            FrameLayout cap = new FrameLayout(this);
+            cap.setClipChildren(false);
+            FrameLayout.LayoutParams capLp = new FrameLayout.LayoutParams(maxW, maxH);
+            capLp.gravity = Gravity.TOP | Gravity.START;
+            capLp.leftMargin = listenLeft;
+            capLp.topMargin = listenTop;
+            cap.setLayoutParams(capLp);
+            outer.addView(cap);
+            capsule = cap;
+
             IslandBackdropView backdrop = new IslandBackdropView(this);
-            // Full listen box so morphing status text stays over animated rim.
-            FrameLayout.LayoutParams backLp =
-                    new FrameLayout.LayoutParams(maxW, maxH);
-            backLp.gravity = Gravity.TOP | Gravity.START;
-            backLp.leftMargin = listenLeft;
-            backLp.topMargin = listenTop;
-            backdrop.setLayoutParams(backLp);
-            outer.addView(backdrop);
+            cap.addView(backdrop, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
             backdropView = backdrop;
 
             IslandPillView visual = new IslandPillView(this);
-            visual.setAnchorInsets(listenLeft, listenTop, maxW, maxH);
+            visual.setAnchorInsets(0, 0, maxW, maxH);
             FrameLayout.LayoutParams visualLp =
                     new FrameLayout.LayoutParams(
                             listening ? maxW : idleW,
                             listening ? maxH : idleH);
-            visualLp.gravity = Gravity.TOP | Gravity.START;
-            visualLp.leftMargin = listening ? listenLeft : idleLeft;
-            visualLp.topMargin = listening ? listenTop : idleTop;
+            visualLp.gravity = Gravity.CENTER;
             visual.setLayoutParams(visualLp);
             visual.setDrawCapsule(false);
             if (listening) {
-                visual.setStatusText(BeeAsk.lineFor("listen"));
+                visual.setStatusText("");
                 visual.setState(IslandPillView.STATE_LISTENING);
             } else {
                 visual.setState(IslandPillView.STATE_IDLE);
             }
-            outer.addView(visual);
+            cap.addView(visual);
             pillView = visual;
 
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(14), 0, dp(12), 0);
+            FrameLayout.LayoutParams rowLp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT);
+            cap.addView(row, rowLp);
+
             IslandWaveView wave = new IslandWaveView(this);
-            FrameLayout.LayoutParams waveLp =
-                    new FrameLayout.LayoutParams(dp(28), dp(18));
-            waveLp.gravity = Gravity.CENTER_VERTICAL | Gravity.START;
-            waveLp.leftMargin = (listening ? listenLeft : idleLeft) + dp(10);
-            waveLp.topMargin = (listening ? listenTop : idleTop) + dp(10);
-            wave.setLayoutParams(waveLp);
-            outer.addView(wave);
+            LinearLayout.LayoutParams waveLp = new LinearLayout.LayoutParams(dp(28), dp(18));
+            waveLp.rightMargin = dp(4);
+            row.addView(wave, waveLp);
             waveView = wave;
+
+            TextView line = new TextView(this);
+            line.setTextColor(Color.WHITE);
+            line.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+            line.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            line.setSingleLine(true);
+            line.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            line.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            line.setMaxLines(1);
+            LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            row.addView(line, lineLp);
+            lineView = line;
             if (listening) {
+                setIslandLine(BeeAsk.lineFor("listen"));
                 setIslandPhase(IslandBackdropView.STATE_LISTENING, true, false);
             } else {
+                setIslandLine("");
                 setIslandPhase(IslandBackdropView.STATE_IDLE, false, false);
             }
 
@@ -428,6 +506,11 @@ public class IslandService extends Service {
                 @Override
                 public void run() {
                     holdFired[0] = true;
+                    if (confirming) {
+                        confirming = false;
+                        AskRouter.handle(IslandService.this, "cancel");
+                        return;
+                    }
                     openApp();
                 }
             };
@@ -471,8 +554,14 @@ public class IslandService extends Service {
                         long age = listening
                                 ? SystemClock.uptimeMillis() - listenStartedAt : 0L;
                         String tapAction = IslandTouch.onTap(listening, confirming, age);
+                        if ("confirm".equals(tapAction)) {
+                            confirming = false;
+                            AskRouter.handle(IslandService.this, "yes");
+                            return true;
+                        }
                         if ("cancel".equals(tapAction)) {
                             confirming = false;
+                            AskRouter.handle(IslandService.this, "cancel");
                             return true;
                         }
                         if ("ignore".equals(tapAction)) {
@@ -545,36 +634,44 @@ public class IslandService extends Service {
                 AskRouter.speak(this, "Can't listen yet");
                 return;
             }
-            main.removeCallbacks(listenWatch);
-            stopRecorder(false);
+            // Free mic from TTS before opening recognizer.
             try {
-                if (recognizer != null) {
-                    recognizer.cancel();
-                }
+                AskRouter.stopTts();
             } catch (Exception ignored) {
             }
-            fallbackUsed = false;
+            main.removeCallbacks(listenWatch);
+            stopRecorder(false);
+            // Destroy prior recognizer — stop/cancel races fire stale onError and
+            // this device's default SR is Google TTS (not Voice Search).
+            destroyRecognizer();
+            listenGen++;
+            listenStarting = true;
+            readyForSpeech = false;
+            museAttempted = false;
+            srRetryUsed = false;
             listening = true;
             listenStartedAt = SystemClock.uptimeMillis();
             if (pillView != null) {
-                pillView.setStatusText(BeeAsk.lineFor("listen"));
+                pillView.setStatusText("");
                 pillView.setState(IslandPillView.STATE_LISTENING);
             }
+            setIslandLine(BeeAsk.lineFor("listen"));
             setIslandPhase(IslandBackdropView.STATE_LISTENING, true, false);
-            // SpeechRecognizer first: Muse transcribe is a silent 8s record then
-            // a POST that usually returns empty, so the user has already stopped
-            // talking by the time fallback starts.
+            // SpeechRecognizer first; Muse/MediaRecorder only if SR unavailable
+            // or hard-fails before onReadyForSpeech.
             if (SpeechRecognizer.isRecognitionAvailable(this)) {
                 startSpeechFallback();
                 return;
             }
             String key = KeyVault.loadKey(this);
             if (key != null && !key.isEmpty() && startRecorder()) {
+                listenStarting = false;
                 main.postDelayed(listenWatch, LISTEN_TIMEOUT_MS);
                 return;
             }
             startSpeechFallback();
         } catch (Exception ignored) {
+            listenStarting = false;
         }
     }
 
@@ -691,113 +788,293 @@ public class IslandService extends Service {
         }
     }
 
-    private void startSpeechFallback() {
+    /** Prefer Google Voice Search — never the default TTS RecognitionService. */
+    private SpeechRecognizer createVoiceRecognizer() {
+        ComponentName google = new ComponentName(
+                "com.google.android.googlequicksearchbox",
+                "com.google.android.voicesearch.serviceapi.GoogleRecognitionService");
         try {
-            if (fallbackUsed) {
-                listening = false;
-                speakListenFail();
-                return;
+            if (Build.VERSION.SDK_INT >= 31) {
+                return SpeechRecognizer.createSpeechRecognizer(this, google);
             }
-            fallbackUsed = true;
-            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-                listening = false;
-                speakListenFail();
-                return;
-            }
-            if (recognizer == null) {
-                recognizer = SpeechRecognizer.createSpeechRecognizer(this);
-                recognizer.setRecognitionListener(new RecognitionListener() {
-                    @Override
-                    public void onReadyForSpeech(android.os.Bundle params) {
+        } catch (Exception e) {
+            Log.w(TAG, "GoogleRecognitionService create failed", e);
+        }
+        try {
+            Intent probe = new Intent(RecognitionServiceIntent());
+            ResolveInfo best = null;
+            java.util.List<ResolveInfo> list =
+                    getPackageManager().queryIntentServices(probe, 0);
+            if (list != null) {
+                for (int i = 0; i < list.size(); i++) {
+                    ResolveInfo ri = list.get(i);
+                    if (ri == null || ri.serviceInfo == null) {
+                        continue;
                     }
-
-                    @Override
-                    public void onBeginningOfSpeech() {
+                    String pkg = ri.serviceInfo.packageName == null
+                            ? "" : ri.serviceInfo.packageName;
+                    String cls = ri.serviceInfo.name == null ? "" : ri.serviceInfo.name;
+                    if (pkg.contains("googlequicksearchbox")
+                            && cls.toLowerCase(java.util.Locale.US).contains("recognition")) {
+                        best = ri;
+                        break;
                     }
-
-                    @Override
-                    public void onRmsChanged(float rmsdB) {
-                        float norm = 0f;
-                        try {
-                            // Typical SpeechRecognizer RMS ~ -2..10; map to 0..1.
-                            norm = Math.max(0f, Math.min(1f, (rmsdB + 2f) / 12f));
-                        } catch (Exception ignored) {
-                            norm = 0f;
-                        }
-                        final float level = norm;
-                        main.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (backdropView != null) {
-                                    backdropView.setVoiceLevel(level);
-                                }
-                                if (waveView != null) {
-                                    waveView.setLevel(level);
-                                }
-                            }
-                        });
+                    if (best == null && !pkg.contains("tts")
+                            && cls.toLowerCase(java.util.Locale.US).contains("recognition")) {
+                        best = ri;
                     }
-
-                    @Override
-                    public void onBufferReceived(byte[] buffer) {
-                    }
-
-                    @Override
-                    public void onEndOfSpeech() {
-                    }
-
-                    @Override
-                    public void onError(int error) {
-                        listening = false;
-                        main.removeCallbacks(listenWatch);
-                        speakListenFail();
-                    }
-
-                    @Override
-                    public void onResults(android.os.Bundle results) {
-                        listening = false;
-                        main.removeCallbacks(listenWatch);
-                        ArrayList<String> heard =
-                                results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                        if (heard != null && !heard.isEmpty()) {
-                            onHeard(heard.get(0));
-                        } else {
-                            speakListenFail();
-                        }
-                    }
-
-                    @Override
-                    public void onPartialResults(android.os.Bundle partialResults) {
-                    }
-
-                    @Override
-                    public void onEvent(int eventType, android.os.Bundle params) {
-                    }
-                });
-            } else {
-                try {
-                    recognizer.cancel();
-                } catch (Exception ignored) {
                 }
             }
-            Intent ri = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            ri.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            main.removeCallbacks(listenWatch);
-            listening = true;
-            listenStartedAt = SystemClock.uptimeMillis();
-            recognizer.startListening(ri);
-            main.postDelayed(listenWatch, LISTEN_TIMEOUT_MS);
+            if (best != null && best.serviceInfo != null && Build.VERSION.SDK_INT >= 31) {
+                ComponentName cn = new ComponentName(
+                        best.serviceInfo.packageName, best.serviceInfo.name);
+                Log.i(TAG, "Using RecognitionService " + cn.flattenToShortString());
+                return SpeechRecognizer.createSpeechRecognizer(this, cn);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "query RecognitionService failed", e);
+        }
+        Log.w(TAG, "Falling back to default SpeechRecognizer (may be TTS)");
+        return SpeechRecognizer.createSpeechRecognizer(this);
+    }
+
+    private static Intent RecognitionServiceIntent() {
+        return new Intent("android.speech.RecognitionService");
+    }
+
+    private void destroyRecognizer() {
+        SpeechRecognizer r = recognizer;
+        recognizer = null;
+        if (r == null) {
+            return;
+        }
+        try {
+            r.setRecognitionListener(null);
         } catch (Exception ignored) {
-            listening = false;
-            speakListenFail();
+        }
+        try {
+            r.cancel();
+        } catch (Exception ignored) {
+        }
+        try {
+            r.destroy();
+        } catch (Exception ignored) {
         }
     }
 
-    private void speakListenFail() {
+    private void startSpeechFallback() {
+        final int gen = listenGen;
+        try {
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                tryMuseRecorderOrFail();
+                return;
+            }
+            if (recognizer == null) {
+                recognizer = createVoiceRecognizer();
+            }
+            if (recognizer == null) {
+                tryMuseRecorderOrFail();
+                return;
+            }
+            // Rebind every session so callbacks close over this listenGen.
+            recognizer.setRecognitionListener(new RecognitionListener() {
+                @Override
+                public void onReadyForSpeech(android.os.Bundle params) {
+                    if (gen != listenGen) {
+                        return;
+                    }
+                    listenStarting = false;
+                    readyForSpeech = true;
+                }
+
+                @Override
+                public void onBeginningOfSpeech() {
+                    if (gen != listenGen) {
+                        return;
+                    }
+                    listenStarting = false;
+                    readyForSpeech = true;
+                }
+
+                @Override
+                public void onRmsChanged(float rmsdB) {
+                    if (gen != listenGen) {
+                        return;
+                    }
+                    float norm = 0f;
+                    try {
+                        norm = Math.max(0f, Math.min(1f, (rmsdB + 2f) / 12f));
+                    } catch (Exception ignored) {
+                        norm = 0f;
+                    }
+                    final float level = norm;
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (backdropView != null) {
+                                backdropView.setVoiceLevel(level);
+                            }
+                            if (waveView != null) {
+                                waveView.setLevel(level);
+                            }
+                        }
+                    });
+                }
+
+                @Override
+                public void onBufferReceived(byte[] buffer) {
+                }
+
+                @Override
+                public void onEndOfSpeech() {
+                }
+
+                @Override
+                public void onError(int error) {
+                    if (gen != listenGen) {
+                        return;
+                    }
+                    // Cancel/restart noise while starting a new session.
+                    if (listenStarting
+                            && (error == SpeechRecognizer.ERROR_CLIENT
+                            || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)) {
+                        return;
+                    }
+                    main.removeCallbacks(listenWatch);
+                    listenStarting = false;
+                    Log.w(TAG, "SR onError code=" + error + " ready=" + readyForSpeech);
+                    // Pre-ready: one SR retry (new gen so stale errors die), then Muse.
+                    if (!readyForSpeech) {
+                        if (!srRetryUsed) {
+                            scheduleRecognizerRetry(gen, 250);
+                            return;
+                        }
+                        if (!museAttempted) {
+                            tryMuseRecorderOrFail();
+                            return;
+                        }
+                        listening = false;
+                        speakListenFail(gen);
+                        return;
+                    }
+                    // Post-ready no-match: one quiet restart.
+                    if ((error == SpeechRecognizer.ERROR_NO_MATCH
+                            || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+                            && !srRetryUsed) {
+                        scheduleRecognizerRetry(gen, 200);
+                        return;
+                    }
+                    listening = false;
+                    speakListenFail(gen);
+                }
+
+                @Override
+                public void onResults(android.os.Bundle results) {
+                    if (gen != listenGen) {
+                        return;
+                    }
+                    listening = false;
+                    listenStarting = false;
+                    main.removeCallbacks(listenWatch);
+                    ArrayList<String> heard =
+                            results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    String best = longestHeard(heard);
+                    if (best != null && !best.isEmpty()) {
+                        onHeard(best);
+                    } else if (!srRetryUsed) {
+                        scheduleRecognizerRetry(gen, 200);
+                    } else {
+                        speakListenFail(gen);
+                    }
+                }
+
+                @Override
+                public void onPartialResults(android.os.Bundle partialResults) {
+                }
+
+                @Override
+                public void onEvent(int eventType, android.os.Bundle params) {
+                }
+            });
+            Intent ri = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            ri.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            ri.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                    2000);
+            ri.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                    2000);
+            ri.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500);
+            ri.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+            main.removeCallbacks(listenWatch);
+            listening = true;
+            listenStartedAt = SystemClock.uptimeMillis();
+            Log.i(TAG, "SR startListening gen=" + gen);
+            recognizer.startListening(ri);
+            main.postDelayed(listenWatch, LISTEN_TIMEOUT_MS);
+            // Keep listenStarting true until ready/error — clearing early turns
+            // ERROR_CLIENT into a hard fail on this OEM.
+        } catch (Exception e) {
+            Log.e(TAG, "startSpeechFallback", e);
+            listenStarting = false;
+            tryMuseRecorderOrFail();
+        }
+    }
+
+    /** Invalidate stale SR callbacks, rebuild engine, start again once. */
+    private void scheduleRecognizerRetry(final int fromGen, int delayMs) {
+        if (fromGen != listenGen || srRetryUsed) {
+            return;
+        }
+        srRetryUsed = true;
+        try {
+            AskRouter.stopTts();
+        } catch (Exception ignored) {
+        }
+        destroyRecognizer();
+        listenGen++;
+        final int retryGen = listenGen;
+        readyForSpeech = false;
+        listenStarting = true;
+        listening = true;
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (retryGen != listenGen) {
+                    return;
+                }
+                startSpeechFallback();
+            }
+        }, delayMs);
+    }
+
+    private void tryMuseRecorderOrFail() {
+        museAttempted = true;
+        String key = KeyVault.loadKey(this);
+        if (key != null && !key.isEmpty() && startRecorder()) {
+            listening = true;
+            listenStarting = false;
+            main.postDelayed(listenWatch, LISTEN_TIMEOUT_MS);
+            return;
+        }
         listening = false;
+        listenStarting = false;
+        speakListenFail(listenGen);
+    }
+
+    private void speakListenFail() {
+        speakListenFail(listenGen);
+    }
+
+    private void speakListenFail(int gen) {
+        listening = false;
+        if (gen == failSpokenGen) {
+            return;
+        }
+        failSpokenGen = gen;
+        // Do not re-arm confirm mic via fail TTS.
+        confirmListenArmed = false;
         if (pillView != null && !PaymentGate.isHidden()) {
-            pillView.setFail("Try again");
+            pillView.setFail("Again");
             setIslandPhase(IslandBackdropView.STATE_ERROR, false, false);
             main.postDelayed(new Runnable() {
                 @Override
@@ -809,7 +1086,11 @@ public class IslandService extends Service {
                 }
             }, 1600);
         }
-        AskRouter.speak(this, "Didn't catch that. Try again.");
+        if (PendingPlan.hasPending()) {
+            AskRouter.speak(this, BeeAsk.clampSpeak("Still waiting on your yes."));
+        } else {
+            AskRouter.speak(this, BeeAsk.clampSpeak("Missed that — say it once more."));
+        }
     }
 
     private void setIslandPhase(int backdropState, boolean waveActive, boolean waveThink) {
@@ -831,15 +1112,26 @@ public class IslandService extends Service {
         }
     }
 
+    /** Mission/speech line inside the capsule (never below the hit slop). */
+    void setIslandLine(final String text) {
+        final String line = BeeAsk.clampLine(text == null ? "" : text);
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (lineView != null) {
+                        lineView.setText(line);
+                        lineView.setVisibility(line.isEmpty() ? View.GONE : View.VISIBLE);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        });
+    }
+
     void playWaterNow() {
         try {
             if (PaymentGate.isHidden()) {
-                return;
-            }
-            if (wm == null) {
-                wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            }
-            if (wm == null) {
                 return;
             }
             hideHero();
@@ -873,48 +1165,65 @@ public class IslandService extends Service {
             });
             int w = getResources().getDisplayMetrics().widthPixels;
             int h = dp(380);
-            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    w,
-                    h,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT);
-            lp.gravity = Gravity.TOP | Gravity.START;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                lp.layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            boolean shown = false;
+            // Prefer a11y overlay (same path as the pill) when host is bound.
+            if (isHostBound()) {
+                shown = IslandAccess.showOverlay(view, w, h, 0, 0, false);
             }
-            lp.x = 0;
-            lp.y = 0;
-            try {
-                wm.addView(view, lp);
-                hero = view;
-                if (pillView != null) {
-                    pillView.setStatusText("Water");
-                    pillView.setState(IslandPillView.STATE_THINKING);
+            if (!shown && Settings.canDrawOverlays(this)) {
+                if (wm == null) {
+                    wm = (WindowManager) getSystemService(WINDOW_SERVICE);
                 }
-                view.play();
-                getSharedPreferences("bee_water", MODE_PRIVATE)
-                        .edit()
-                        .putLong("last", System.currentTimeMillis())
-                        .apply();
-                main.removeCallbacks(hideHero);
-                main.postDelayed(hideHero, WaterHero.OFFER_MS + 8000L);
-            } catch (Exception ignored) {
-                hero = null;
+                if (wm != null) {
+                    try {
+                        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                                w,
+                                h,
+                                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                                PixelFormat.TRANSLUCENT);
+                        lp.gravity = Gravity.TOP | Gravity.START;
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            lp.layoutInDisplayCutoutMode =
+                                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                        }
+                        lp.x = 0;
+                        lp.y = 0;
+                        wm.addView(view, lp);
+                        shown = true;
+                    } catch (Exception e) {
+                        Log.e(TAG, "playWater app overlay failed", e);
+                    }
+                }
             }
-        } catch (Exception ignored) {
+            if (!shown) {
+                AskRouter.speak(this, BeeAsk.clampSpeak(
+                        "Need overlay permission for water."));
+                return;
+            }
+            hero = view;
+            if (pillView != null) {
+                pillView.setStatusText("");
+                pillView.setState(IslandPillView.STATE_THINKING);
+            }
+            setIslandLine("Water");
+            view.play();
+            getSharedPreferences("bee_water", MODE_PRIVATE)
+                    .edit()
+                    .putLong("last", System.currentTimeMillis())
+                    .apply();
+            main.removeCallbacks(hideHero);
+            main.postDelayed(hideHero, WaterHero.OFFER_MS + 8000L);
+        } catch (Exception e) {
+            Log.e(TAG, "playWaterNow", e);
         }
     }
 
     private void showHeroHit(final HydrationHeroView view) {
         hideHeroHit();
         try {
-            if (wm == null) {
-                return;
-            }
             View hit = new View(this);
             hit.setClickable(true);
             hit.setOnClickListener(new View.OnClickListener() {
@@ -927,53 +1236,90 @@ public class IslandService extends Service {
             });
             int w = dp(160);
             int h = dp(160);
-            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    w,
-                    h,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT);
-            lp.gravity = Gravity.TOP | Gravity.START;
-            lp.x = Math.max(0, Math.round(CAMERA_X_PX - w / 2f));
-            lp.y = Math.max(0, Math.round(CAMERA_Y_PX + dp(90)));
-            wm.addView(hit, lp);
-            heroHit = hit;
-        } catch (Exception ignored) {
+            int x = Math.max(0, Math.round(CAMERA_X_PX - w / 2f));
+            int y = Math.max(0, Math.round(CAMERA_Y_PX + dp(90)));
+            boolean shown = false;
+            if (isHostBound()) {
+                shown = IslandAccess.showOverlay(hit, w, h, x, y, true);
+            }
+            if (!shown && Settings.canDrawOverlays(this)) {
+                if (wm == null) {
+                    wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                }
+                if (wm != null) {
+                    WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                            w,
+                            h,
+                            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                    | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                            PixelFormat.TRANSLUCENT);
+                    lp.gravity = Gravity.TOP | Gravity.START;
+                    lp.x = x;
+                    lp.y = y;
+                    wm.addView(hit, lp);
+                    shown = true;
+                }
+            }
+            if (shown) {
+                heroHit = hit;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "showHeroHit", e);
         }
     }
 
     private void hideHeroHit() {
+        View hit = heroHit;
+        heroHit = null;
+        if (hit == null) {
+            return;
+        }
         try {
-            if (heroHit != null && wm != null) {
-                wm.removeView(heroHit);
+            IslandAccess.hideOverlay(hit);
+        } catch (Exception ignored) {
+        }
+        try {
+            if (wm != null) {
+                wm.removeView(hit);
             }
         } catch (Exception ignored) {
         }
-        heroHit = null;
     }
 
     private void hideHero() {
         hideHeroHit();
+        HydrationHeroView h = hero;
+        hero = null;
+        if (h == null) {
+            return;
+        }
         try {
-            if (hero != null) {
-                hero.stop();
-                if (wm != null) {
-                    wm.removeView(hero);
-                }
+            h.stop();
+        } catch (Exception ignored) {
+        }
+        try {
+            IslandAccess.hideOverlay(h);
+        } catch (Exception ignored) {
+        }
+        try {
+            if (wm != null) {
+                wm.removeView(h);
             }
         } catch (Exception ignored) {
         }
-        hero = null;
     }
 
     private void stopListeningQuiet() {
+        listenGen++;
+        listenStarting = false;
+        readyForSpeech = false;
+        confirmListenArmed = false;
         try {
             main.removeCallbacks(listenWatch);
-            if (recognizer != null) {
-                recognizer.cancel();
-            }
+            stopRecorder(false);
+            destroyRecognizer();
         } catch (Exception ignored) {
         }
         listening = false;
@@ -989,35 +1335,107 @@ public class IslandService extends Service {
 
     private void onHeard(String text) {
         if (pillView != null && !PaymentGate.isHidden()) {
-            pillView.setStatusText(BeeAsk.lineFor("plan"));
+            pillView.setStatusText("");
             pillView.setState(IslandPillView.STATE_THINKING);
         }
+        setIslandLine(BeeAsk.lineFor("plan"));
         setIslandPhase(IslandBackdropView.STATE_THINKING, true, true);
         AskRouter.handle(this, text);
     }
 
     /** Called when PendingPlan is staged — amber confirm pulse. */
     void showConfirmPulse() {
+        showConfirmPulse(BeeAsk.lineFor("confirm"));
+    }
+
+    void showConfirmPulse(String prompt) {
         if (PaymentGate.isHidden()) {
             return;
         }
         if (pillView != null) {
-            pillView.setStatusText(BeeAsk.lineFor("confirm"));
+            pillView.setStatusText("");
             pillView.setState(IslandPillView.STATE_THINKING);
         }
+        String line = (prompt == null || prompt.trim().isEmpty())
+                ? BeeAsk.lineFor("confirm") : BeeAsk.clampLine(prompt);
+        setIslandLine(line);
         setIslandPhase(IslandBackdropView.STATE_CONFIRM, false, false);
+    }
+
+    /** After TTS confirm prompt, open mic for yes/cancel. */
+    void listenAfterConfirm() {
+        listenAfterConfirm("");
+    }
+
+    /**
+     * Arm confirm listen: prefer TTS onDone via {@link #listenAfterConfirmReady};
+     * fallback timer if TTS never fires.
+     */
+    void listenAfterConfirm(String spoken) {
+        confirmListenArmed = true;
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (confirmListenArmed && PendingPlan.hasPending()) {
+                    listenAfterConfirmReady();
+                }
+            }
+        }, 3500);
+    }
+
+    /** Called when confirm TTS finishes (or fallback timer). */
+    void listenAfterConfirmReady() {
+        if (!confirmListenArmed) {
+            return;
+        }
+        confirmListenArmed = false;
+        try {
+            AskRouter.stopTts();
+        } catch (Exception ignored) {
+        }
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (PendingPlan.hasPending()) {
+                        startListening();
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }, 300);
+    }
+
+    private static String longestHeard(ArrayList<String> heard) {
+        if (heard == null || heard.isEmpty()) {
+            return "";
+        }
+        String best = "";
+        for (int i = 0; i < heard.size(); i++) {
+            String s = heard.get(i);
+            if (s == null) {
+                continue;
+            }
+            s = s.trim();
+            if (s.length() > best.length()) {
+                best = s;
+            }
+        }
+        return best;
     }
 
     void showActing() {
         setIslandPhase(IslandBackdropView.STATE_ACTING, false, false);
+        setIslandLine(BeeAsk.lineFor("done"));
         if (pillView != null && !PaymentGate.isHidden()) {
-            pillView.setSuccess(BeeAsk.lineFor("done"));
+            pillView.setSuccess("");
             main.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     if (pillView != null && !PaymentGate.isHidden()) {
                         pillView.setState(IslandPillView.STATE_IDLE);
                     }
+                    setIslandLine("");
                     setIslandPhase(IslandBackdropView.STATE_IDLE, false, false);
                 }
             }, 2200);
@@ -1041,6 +1459,8 @@ public class IslandService extends Service {
         pillView = null;
         backdropView = null;
         waveView = null;
+        lineView = null;
+        capsule = null;
     }
 
     private int dp(int v) {

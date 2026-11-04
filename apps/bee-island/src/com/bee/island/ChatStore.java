@@ -33,9 +33,14 @@ final class ChatStore {
         listener = next;
     }
 
+    private static final int MAX_LINES = 30;
+
     static void add(Context context, boolean user, String text) {
         List<Line> lines = snapshot(context);
         lines.add(new Line(user, text));
+        while (lines.size() > MAX_LINES) {
+            lines.remove(0);
+        }
         JSONArray arr = new JSONArray();
         for (Line line : lines) {
             JSONObject row = new JSONObject();

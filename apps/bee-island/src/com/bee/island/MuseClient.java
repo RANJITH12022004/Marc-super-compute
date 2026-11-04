@@ -937,6 +937,13 @@ public final class MuseClient {
                 input = mind + "\n\n" + input;
             }
         }
+        String guide = "Plan with ordered phone function tools. Tokenize multi-step commands. "
+                + "script/draft/write → chat_touch with to+topic+channel (whatsapp|sms|mail); never paste topic as body. "
+                + "Match personal style; Bee drafts then confirms whatsapp_send, sms_send, or mail_compose. "
+                + "Literal text/whatsapp X hi → whatsapp_send; sms X hi → sms_send; email X … → mail_compose. "
+                + "last/show chats → wa_list_chats limit 30 package com.whatsapp.w4b. "
+                + "Resolve contact typos. Never invent tap ratios. device=phone.\n\n";
+        input = guide + input;
         Map<String, Object> payload = buildPayload(model, input, null, true);
         if (payload != null) {
             payload.remove("Authorization");
@@ -984,8 +991,12 @@ public final class MuseClient {
     public static List<Object> toolsSchema() {
         List<Object> tools = new ArrayList<Object>();
         tools.add(fn("whatsapp_send", "to", "text"));
+        tools.add(fn("chat_touch", "to", "topic"));
+        tools.add(fn("sms_send", "to", "text"));
+        tools.add(fn("wa_list_chats", "limit", "package"));
         tools.add(fn("play_music", "query"));
         tools.add(fn("mail_compose", "to", "subject"));
+        tools.add(fn("mail_send", "to", "subject"));
         tools.add(fn("dial", "to"));
         tools.add(fn("open_app", "app"));
         tools.add(fn("type_into", "text"));
